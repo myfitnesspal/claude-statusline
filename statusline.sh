@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # Claude Code Status Line
-# Line 1: [model] dir | ctx: N% | $cost
-# Line 2: ctx: Nk (+Nk) | out: N
+# Line 1: [model] dir | $cost
+# Line 2: ctx: N% | in: Nk | out: Nk (per-round, monotonically growing)
 #
 # Context % is color-coded: green < 50%, yellow 50-79%, red 80%+
-# Prompt size (+N) is color-coded: green < 1k, yellow 1-5k, red > 5k
+# Per-round input is color-coded: green < 1k, yellow 1-5k, red > 5k
 #
 # Requires: jq
+# Requires: UserPromptSubmit hook running round-reset.sh
 
 input=$(cat)
+STATE_FILE="/tmp/claude-statusline-state"
+NEWROUND_FILE="/tmp/claude-statusline-newround"
 
 # Extract fields
 model=$(echo "$input" | jq -r '.model.display_name // ""')
@@ -17,10 +20,19 @@ dir="${cwd##*/}"
 used_pct=$(echo "$input" | jq -r '.context_window.used_percentage // 0' | cut -d. -f1)
 cost=$(echo "$input" | jq -r '.cost.total_cost_usd // 0')
 
-cache_read=$(echo "$input" | jq -r '.context_window.current_usage.cache_read_input_tokens // 0')
-cache_create=$(echo "$input" | jq -r '.context_window.current_usage.cache_creation_input_tokens // 0')
-uncached=$(echo "$input" | jq -r '.context_window.current_usage.input_tokens // 0')
-out_tokens=$(echo "$input" | jq -r '.context_window.current_usage.output_tokens // 0')
+# Current context window size (total tokens in context right now)
+ctx_tokens=$(echo "$input" | jq -r '
+	((.context_window.current_usage.input_tokens // 0) +
+	(.context_window.current_usage.cache_creation_input_tokens // 0) +
+	(.context_window.current_usage.cache_read_input_tokens // 0))
+')
+
+# Per-call tokens
+call_fresh=$(echo "$input" | jq -r '
+	(.context_window.current_usage.cache_creation_input_tokens // 0) +
+	(.context_window.current_usage.input_tokens // 0)
+')
+call_out=$(echo "$input" | jq -r '.context_window.current_usage.output_tokens // 0')
 
 # Colors
 GREEN='\033[32m'
@@ -41,6 +53,27 @@ fmt_tokens() {
 	fi
 }
 
+# State format: round_in_accum|round_out_accum
+round_in=0
+round_out=0
+if [ -f "$STATE_FILE" ]; then
+	IFS='|' read -r round_in round_out < "$STATE_FILE"
+fi
+
+# If UserPromptSubmit hook signaled a new round, reset accumulators
+if [ -f "$NEWROUND_FILE" ]; then
+	round_in=0
+	round_out=0
+	rm -f "$NEWROUND_FILE"
+fi
+
+# Accumulate this call's tokens
+round_in=$((round_in + call_fresh))
+round_out=$((round_out + call_out))
+
+# Save state
+echo "${round_in}|${round_out}" > "$STATE_FILE"
+
 # Color for used_percentage
 if [ "$used_pct" -ge 80 ]; then
 	pct_color="$RED"
@@ -50,26 +83,27 @@ else
 	pct_color="$GREEN"
 fi
 
-# Color for cache_creation (prompt size)
-if [ "$cache_create" -ge 5000 ]; then
-	new_color="$RED"
-elif [ "$cache_create" -ge 1000 ]; then
-	new_color="$YELLOW"
+# Color for per-round input
+if [ "$round_in" -ge 5000 ]; then
+	in_color="$RED"
+elif [ "$round_in" -ge 1000 ]; then
+	in_color="$YELLOW"
 else
-	new_color="$GREEN"
+	in_color="$GREEN"
 fi
 
 # Format cost
 cost_fmt=$(printf '$%.2f' "$cost")
 
-# Total context = cache_read + cache_create + uncached input
-ctx_total=$((cache_read + cache_create + uncached))
-
 # Line 1: persistent info
-printf '%b' "${NORMAL}[$model] $dir | ${pct_color}ctx: ${used_pct}%${NORMAL} | ${NORMAL}${cost_fmt}${RESET}"
-echo
+# Single line: model dir | ctx: 53.4k (7%) | in: 1.2k | out: 354 | $2.50
+# Shorten model name (e.g. "Opus 4.6 (1M context)" -> "Opus 4.6")
+short_model=$(echo "$model" | sed 's/ (.*)//')
 
-# Line 2: last round token stats (skip if no API call yet)
-if [ "$ctx_total" -gt 0 ]; then
-	printf '%b' "${NORMAL}ctx: $(fmt_tokens "$ctx_total") (${new_color}+$(fmt_tokens "$cache_create")${NORMAL}) | out: $(fmt_tokens "$out_tokens")${RESET}"
+parts="${NORMAL}${short_model}"
+if [ "$round_in" -gt 0 ] || [ "$round_out" -gt 0 ]; then
+	parts="${parts} | ${in_color}↑$(fmt_tokens "$round_in")${NORMAL} ↓$(fmt_tokens "$round_out")"
 fi
+parts="${parts} | $(fmt_tokens "$ctx_tokens") ${pct_color}(${used_pct}%)${NORMAL}"
+parts="${parts} | ${cost_fmt}${RESET}"
+printf '%b' "$parts"
