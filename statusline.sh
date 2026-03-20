@@ -10,8 +10,9 @@
 # Requires: UserPromptSubmit hook running round-reset.sh
 
 input=$(cat)
-STATE_FILE="/tmp/claude-statusline-state"
-NEWROUND_FILE="/tmp/claude-statusline-newround"
+session_id=$(echo "$input" | jq -r '.session_id // "default"')
+STATE_FILE="/tmp/claude-statusline-${session_id}"
+NEWROUND_FILE="/tmp/claude-statusline-newround-${session_id}"
 
 # Extract fields
 model=$(echo "$input" | jq -r '.model.display_name // ""')
