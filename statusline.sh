@@ -16,7 +16,9 @@ NEWROUND_FILE="/tmp/claude-statusline-newround"
 # Extract fields
 model=$(echo "$input" | jq -r '.model.display_name // ""')
 cwd=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // ""')
-dir="${cwd##*/}"
+project_dir=$(echo "$input" | jq -r '.workspace.project_dir // ""')
+agent_name=$(echo "$input" | jq -r '.agent.name // empty')
+worktree_name=$(echo "$input" | jq -r '.worktree.name // empty')
 used_pct=$(echo "$input" | jq -r '.context_window.used_percentage // 0' | cut -d. -f1)
 cost=$(echo "$input" | jq -r '.cost.total_cost_usd // 0')
 
@@ -100,7 +102,14 @@ cost_fmt=$(printf '$%.2f' "$cost")
 # Shorten model name (e.g. "Opus 4.6 (1M context)" -> "Opus 4.6")
 short_model=$(echo "$model" | sed 's/ (.*)//')
 
+# Show dir/agent/worktree only when context differs from project root
+location=""
+[ -n "$agent_name" ] && location="${agent_name}"
+[ -n "$worktree_name" ] && location="${location:+${location} }${worktree_name}"
+[ "$cwd" != "$project_dir" ] && [ -z "$worktree_name" ] && location="${cwd##*/}"
+
 parts="${NORMAL}${short_model}"
+[ -n "$location" ] && parts="${parts} ${location}"
 if [ "$round_in" -gt 0 ] || [ "$round_out" -gt 0 ]; then
 	parts="${parts} | ${in_color}↑$(fmt_tokens "$round_in")${NORMAL} ↓$(fmt_tokens "$round_out")"
 fi
