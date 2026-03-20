@@ -2,10 +2,7 @@
 
 A two-line status bar for [Claude Code](https://claude.ai/code) that shows context usage, token counts, and session cost.
 
-```
-[Opus 4.6 (1M context)] mfp-ios | ctx: 5% | $1.13
-ctx: 53.4k (+238) | out: 154
-```
+![demo](demo.gif)
 
 ## What it shows
 
@@ -37,7 +34,7 @@ Context % tells you when you're running out of room. Prompt size helps you learn
 ## Install
 
 ```bash
-git clone https://github.com/yourusername/claude-statusline.git ~/.claude-statusline
+git clone https://github.com/myfitnesspal/claude-statusline.git ~/.claude-statusline
 cd ~/.claude-statusline
 ./install.sh
 ```
