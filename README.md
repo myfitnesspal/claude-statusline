@@ -21,7 +21,7 @@ Opus 4.6 | ↑1.2k ↓354 | 53.4k (7%) | $2.50
 | Indicator | Green | Yellow | Red |
 |-----------|-------|--------|-----|
 | Context % | < 50% | 50-79% | 80%+ |
-| Round input (↑) | < 1k tokens | 1-5k tokens | > 5k tokens |
+| Round input (↑) | < 5k tokens | 5-20k tokens | > 20k tokens |
 
 Context % tells you when you're running out of room. Round input helps you learn which prompts are expensive.
 

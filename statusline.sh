@@ -86,9 +86,9 @@ else
 fi
 
 # Color for per-round input
-if [ "$round_in" -ge 5000 ]; then
+if [ "$round_in" -ge 20000 ]; then
 	in_color="$RED"
-elif [ "$round_in" -ge 1000 ]; then
+elif [ "$round_in" -ge 5000 ]; then
 	in_color="$YELLOW"
 else
 	in_color="$GREEN"
