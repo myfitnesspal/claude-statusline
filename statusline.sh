@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Claude Code Status Line
 # Line 1: [model] dir | $cost
-# Line 2: ctx: N% | in: Nk | out: Nk (per-round, monotonically growing)
+# Line 2: ctx: N% | in: Nk (N.N%) | out: Nk (N.N%) (per-round, monotonically growing)
 #
 # Context % is color-coded: green < 50%, yellow 50-79%, red 80%+
 # Per-round input is color-coded: green < 1k, yellow 1-5k, red > 5k
@@ -30,6 +30,13 @@ ctx_tokens=$(echo "$input" | jq -r '
 	(.context_window.current_usage.cache_read_input_tokens // 0))
 ')
 
+# Max context window (derived from current usage and percentage)
+if [ "$used_pct" -gt 0 ]; then
+	ctx_max=$((ctx_tokens * 100 / used_pct))
+else
+	ctx_max=0
+fi
+
 # Per-call tokens
 call_fresh=$(echo "$input" | jq -r '
 	(.context_window.current_usage.cache_creation_input_tokens // 0) +
@@ -43,6 +50,18 @@ YELLOW='\033[33m'
 RED='\033[31m'
 NORMAL='\033[38;5;245m'
 RESET='\033[0m'
+
+# Format tokens as percentage of context window (e.g. "0.6%")
+fmt_pct() {
+	local n=$1
+	if [ "$ctx_max" -le 0 ]; then
+		printf '?%%'
+		return
+	fi
+	local whole=$((n * 100 / ctx_max))
+	local frac=$(( (n * 1000 / ctx_max) % 10 ))
+	printf '%s.%s%%' "$whole" "$frac"
+}
 
 # Human-friendly token formatting (1234 -> 1.2k, 53412 -> 53.4k)
 fmt_tokens() {
@@ -112,8 +131,8 @@ location=""
 parts="${NORMAL}${short_model}"
 [ -n "$location" ] && parts="${parts} ${location}"
 if [ "$round_in" -gt 0 ] || [ "$round_out" -gt 0 ]; then
-	parts="${parts} | ${in_color}↑$(fmt_tokens "$round_in")${NORMAL} ↓$(fmt_tokens "$round_out")"
+	parts="${parts} | ${in_color}↑$(fmt_tokens "$round_in") $(fmt_pct "$round_in")${NORMAL} ↓$(fmt_tokens "$round_out") $(fmt_pct "$round_out")"
 fi
-parts="${parts} | $(fmt_tokens "$ctx_tokens") ${pct_color}(${used_pct}%)${NORMAL}"
+parts="${parts} ${pct_color}$(fmt_tokens "$ctx_tokens") (${used_pct}%)${NORMAL}"
 parts="${parts} | ${cost_fmt}${RESET}"
 printf '%b' "$parts"
