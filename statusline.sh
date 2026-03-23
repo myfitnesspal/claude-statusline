@@ -128,10 +128,29 @@ location=""
 [ -n "$worktree_name" ] && location="${location:+${location} }${worktree_name}"
 [ "$cwd" != "$project_dir" ] && [ -z "$worktree_name" ] && location="${cwd##*/}"
 
+# Subagent governance status (optional, no-op if not installed)
+sa_status=""
+if [ -f "$HOME/src/claude-config/hooks/subagent-status.sh" ]; then
+	sa_state_file="/tmp/claude-subagent-state-${session_id}"
+	if [ -f "$sa_state_file" ]; then
+		if grep -q "^disabled$" "$sa_state_file" 2>/dev/null; then
+			sa_status="${NORMAL}[sa:off]"
+		else
+			sa_status="${GREEN}[sa:on]"
+		fi
+	elif [ -f "$HOME/src/claude-config/subagents-disabled" ]; then
+		sa_status="${NORMAL}[sa:off]"
+	else
+		sa_status="${GREEN}[sa:on]"
+	fi
+fi
+
 parts="${NORMAL}${short_model}"
 [ -n "$location" ] && parts="${parts} ${location}"
+[ -n "$sa_status" ] && parts="${parts} ${sa_status}${NORMAL}"
+parts="${parts} |"
 if [ "$round_in" -gt 0 ] || [ "$round_out" -gt 0 ]; then
-	parts="${parts} | ${in_color}↑$(fmt_tokens "$round_in") $(fmt_pct "$round_in")${NORMAL} ↓$(fmt_tokens "$round_out") $(fmt_pct "$round_out")"
+	parts="${parts} ${in_color}↑$(fmt_tokens "$round_in") ($(fmt_pct "$round_in"))${NORMAL} ↓$(fmt_tokens "$round_out") ($(fmt_pct "$round_out"))"
 fi
 parts="${parts} ${pct_color}$(fmt_tokens "$ctx_tokens") (${used_pct}%)${NORMAL}"
 parts="${parts} | ${cost_fmt}${RESET}"
