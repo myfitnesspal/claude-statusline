@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Claude Code Status Line
-# Line 1: [model] dir | $cost
-# Line 2: ctx: N% | in: Nk (N.N%) | out: Nk (N.N%) (per-round, monotonically growing)
+# [model] dir | ↑in ↓out ctx | 5h:N% 7d:N%
 #
 # Context % is color-coded: green < 50%, yellow 50-79%, red 80%+
 # Per-round input is color-coded: green < 1k, yellow 1-5k, red > 5k
@@ -21,6 +20,9 @@ project_dir=$(echo "$input" | jq -r '.workspace.project_dir // ""')
 agent_name=$(echo "$input" | jq -r '.agent.name // empty')
 worktree_name=$(echo "$input" | jq -r '.worktree.name // empty')
 used_pct=$(echo "$input" | jq -r '.context_window.used_percentage // 0' | cut -d. -f1)
+# Rate limits (Pro/Max subscribers only)
+limit_5h=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty' | cut -d. -f1)
+limit_7d=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty' | cut -d. -f1)
 cost=$(echo "$input" | jq -r '.cost.total_cost_usd // 0')
 
 # Current context window size (total tokens in context right now)
@@ -114,11 +116,22 @@ else
 	in_color="$GREEN"
 fi
 
-# Format cost
-cost_fmt=$(printf '$%.2f' "$cost")
+# Format rate limits with color coding
+fmt_limit() {
+	local pct=$1
+	local label=$2
+	if [ -z "$pct" ]; then
+		return
+	fi
+	local color="$GREEN"
+	if [ "$pct" -ge 80 ]; then
+		color="$RED"
+	elif [ "$pct" -ge 50 ]; then
+		color="$YELLOW"
+	fi
+	printf '%b%s:%s%%%b' "$color" "$label" "$pct" "$NORMAL"
+}
 
-# Line 1: persistent info
-# Single line: model dir | ctx: 53.4k (7%) | in: 1.2k | out: 354 | $2.50
 # Shorten model name (e.g. "Opus 4.6 (1M context)" -> "Opus 4.6")
 short_model=$(echo "$model" | sed 's/ (.*)//')
 
@@ -153,5 +166,12 @@ if [ "$round_in" -gt 0 ] || [ "$round_out" -gt 0 ]; then
 	parts="${parts} ${in_color}↑$(fmt_tokens "$round_in") ($(fmt_pct "$round_in"))${NORMAL} ↓$(fmt_tokens "$round_out") ($(fmt_pct "$round_out"))"
 fi
 parts="${parts} ${pct_color}$(fmt_tokens "$ctx_tokens") (${used_pct}%)${NORMAL}"
+cost_fmt=$(printf '$%.2f' "$cost")
+limit_parts=""
+if [ -n "$limit_5h" ]; then
+	limit_parts="$(fmt_limit "$limit_5h" "5h")"
+	[ -n "$limit_7d" ] && limit_parts="${limit_parts} $(fmt_limit "$limit_7d" "7d")"
+	parts="${parts} | ${limit_parts}"
+fi
 parts="${parts} | ${cost_fmt}${RESET}"
 printf '%b' "$parts"
