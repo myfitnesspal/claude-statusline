@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Claude Code Status Line
-# [model] dir | ↑in ↓out ctx | 5h:N% 7d:N%
+# [model] dir | ↑in ↓out ctx | 2h14m:N% 3d5h:N%
 #
 # Context % is color-coded: green < 50%, yellow 50-79%, red 80%+
 # Per-round input is color-coded: green < 1k, yellow 1-5k, red > 5k
@@ -22,7 +22,9 @@ worktree_name=$(echo "$input" | jq -r '.worktree.name // empty')
 used_pct=$(echo "$input" | jq -r '.context_window.used_percentage // 0' | cut -d. -f1)
 # Rate limits (Pro/Max subscribers only)
 limit_5h=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty' | cut -d. -f1)
+limit_5h_reset=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
 limit_7d=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty' | cut -d. -f1)
+limit_7d_reset=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
 cost=$(echo "$input" | jq -r '.cost.total_cost_usd // 0')
 
 # Current context window size (total tokens in context right now)
@@ -116,10 +118,29 @@ else
 	in_color="$GREEN"
 fi
 
-# Format rate limits with color coding
+# Format duration from seconds (e.g. 3661 -> "1h1m", 90 -> "1m", 86400 -> "1d")
+fmt_duration() {
+	local secs=$1
+	if [ "$secs" -le 0 ]; then
+		printf '<1m'
+		return
+	fi
+	local days=$((secs / 86400))
+	local hours=$(( (secs % 86400) / 3600 ))
+	local mins=$(( (secs % 3600) / 60 ))
+	if [ "$days" -gt 0 ]; then
+		printf '%dd%dh' "$days" "$hours"
+	elif [ "$hours" -gt 0 ]; then
+		printf '%dh%dm' "$hours" "$mins"
+	else
+		printf '%dm' "$mins"
+	fi
+}
+
+# Format rate limits with color coding and time remaining
 fmt_limit() {
 	local pct=$1
-	local label=$2
+	local reset_ts=$2
 	if [ -z "$pct" ]; then
 		return
 	fi
@@ -128,6 +149,15 @@ fmt_limit() {
 		color="$RED"
 	elif [ "$pct" -ge 50 ]; then
 		color="$YELLOW"
+	fi
+	local label=""
+	if [ -n "$reset_ts" ]; then
+		local now
+		now=$(date +%s)
+		local remaining=$((reset_ts - now))
+		label=$(fmt_duration "$remaining")
+	else
+		label="?"
 	fi
 	printf '%b%s:%s%%%b' "$color" "$label" "$pct" "$NORMAL"
 }
@@ -169,8 +199,8 @@ parts="${parts} ${pct_color}$(fmt_tokens "$ctx_tokens") (${used_pct}%)${NORMAL}"
 cost_fmt=$(printf '$%.2f' "$cost")
 limit_parts=""
 if [ -n "$limit_5h" ]; then
-	limit_parts="$(fmt_limit "$limit_5h" "5h")"
-	[ -n "$limit_7d" ] && limit_parts="${limit_parts} $(fmt_limit "$limit_7d" "7d")"
+	limit_parts="$(fmt_limit "$limit_5h" "$limit_5h_reset")"
+	[ -n "$limit_7d" ] && limit_parts="${limit_parts} $(fmt_limit "$limit_7d" "$limit_7d_reset")"
 	parts="${parts} | ${limit_parts}"
 fi
 parts="${parts} | ${cost_fmt}${RESET}"
