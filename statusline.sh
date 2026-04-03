@@ -193,9 +193,9 @@ parts="${NORMAL}${short_model}"
 [ -n "$sa_status" ] && parts="${parts} ${sa_status}${NORMAL}"
 parts="${parts} |"
 if [ "$round_in" -gt 0 ] || [ "$round_out" -gt 0 ]; then
-	parts="${parts} ${in_color}↑$(fmt_tokens "$round_in") ($(fmt_pct "$round_in"))${NORMAL} ↓$(fmt_tokens "$round_out") ($(fmt_pct "$round_out"))"
+	parts="${parts} ${in_color}↑$(fmt_tokens "$round_in"):$(fmt_pct "$round_in")${NORMAL} ↓$(fmt_tokens "$round_out"):$(fmt_pct "$round_out")"
 fi
-parts="${parts} ${pct_color}$(fmt_tokens "$ctx_tokens") (${used_pct}%)${NORMAL}"
+parts="${parts} ${pct_color}$(fmt_tokens "$ctx_tokens"):${used_pct}%${NORMAL}"
 round_cost=$(awk "BEGIN {printf \"%.2f\", $cost - $round_start_cost}")
 cost_fmt=$(printf '+$%s $%.2f' "$round_cost" "$cost")
 limit_parts=""
