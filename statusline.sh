@@ -2,7 +2,7 @@
 # Claude Code Status Line
 # [model] dir | ↑in ↓out ctx | 2h14m:N% 3d5h:N%
 #
-# Context % is color-coded: green < 50%, yellow 50-79%, red 80%+
+# Context % is relative to auto-compact threshold, color-coded: green < 50%, yellow 50-79%, red 80%+
 # Per-round input is color-coded: green < 1k, yellow 1-5k, red > 5k
 #
 # Requires: jq
@@ -19,7 +19,6 @@ cwd=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // ""')
 project_dir=$(echo "$input" | jq -r '.workspace.project_dir // ""')
 agent_name=$(echo "$input" | jq -r '.agent.name // empty')
 worktree_name=$(echo "$input" | jq -r '.worktree.name // empty')
-used_pct=$(echo "$input" | jq -r '.context_window.used_percentage // 0' | cut -d. -f1)
 # Rate limits (Pro/Max subscribers only)
 limit_5h=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty' | cut -d. -f1)
 limit_5h_reset=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
@@ -27,19 +26,23 @@ limit_7d=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empt
 limit_7d_reset=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
 cost=$(echo "$input" | jq -r '.cost.total_cost_usd // 0')
 
-# Current context window size (total tokens in context right now)
-ctx_tokens=$(echo "$input" | jq -r '
-	((.context_window.current_usage.input_tokens // 0) +
-	(.context_window.current_usage.cache_creation_input_tokens // 0) +
-	(.context_window.current_usage.cache_read_input_tokens // 0))
+# Context window: current tokens in use and max size
+read -r ctx_tokens ctx_max < <(echo "$input" | jq -r '
+	[((.context_window.current_usage.input_tokens // 0) +
+	  (.context_window.current_usage.cache_creation_input_tokens // 0) +
+	  (.context_window.current_usage.cache_read_input_tokens // 0)),
+	 (.context_window.context_window_size // 0)] | @tsv
 ')
 
-# Max context window (derived from current usage and percentage)
-if [ "$used_pct" -gt 0 ]; then
-	ctx_max=$((ctx_tokens * 100 / used_pct))
-else
-	ctx_max=0
-fi
+# Auto-compact threshold: the token count that triggers compaction.
+# Claude Code computes this as: contextWindow - min(maxOutputTokens, 20000) - 13000
+# e.g. Opus 4.6 with 200K context, ~16K max output: 200K - 16K - 13K = ~171K (~85%)
+# e.g. Opus 4.6 with 1M context: 1M - 16K - 13K = ~971K (~97%)
+# We approximate the reserved overhead as 33000 (20K output cap + 13K buffer).
+# Override with COMPACT_OVERHEAD env var if needed.
+compact_overhead=${COMPACT_OVERHEAD:-33000}
+compact_threshold=$((ctx_max - compact_overhead))
+[ "$compact_threshold" -le 0 ] && compact_threshold=1
 
 # Per-call output tokens (input delta is computed from context growth)
 call_out=$(echo "$input" | jq -r '.context_window.current_usage.output_tokens // 0')
@@ -51,25 +54,25 @@ RED='\033[31m'
 NORMAL='\033[38;5;245m'
 RESET='\033[0m'
 
-# Format tokens as percentage of context window (e.g. "0.6%")
+# Format tokens as percentage of compact threshold (e.g. "0.6%")
 fmt_pct() {
 	local n=$1
-	if [ "$ctx_max" -le 0 ]; then
-		printf '?%%'
-		return
-	fi
-	local whole=$((n * 100 / ctx_max))
-	local frac=$(( (n * 1000 / ctx_max) % 10 ))
+	local whole=$((n * 100 / compact_threshold))
+	local frac=$(( (n * 1000 / compact_threshold) % 10 ))
 	printf '%s.%s%%' "$whole" "$frac"
 }
 
-# Human-friendly token formatting (1234 -> 1.2k, 53412 -> 53.4k)
+# Human-friendly token formatting (1234 -> 1.2k, 200000 -> 200k, 1000000 -> 1M)
 fmt_tokens() {
 	local n=$1
 	if [ "$n" -ge 1000000 ]; then
-		printf '%s.%sM' "$((n / 1000000))" "$(( (n % 1000000) / 100000 ))"
+		local major=$((n / 1000000)) minor=$(( (n % 1000000) / 100000 ))
+		if [ "$minor" -eq 0 ]; then printf '%sM' "$major"
+		else printf '%s.%sM' "$major" "$minor"; fi
 	elif [ "$n" -ge 1000 ]; then
-		printf '%s.%sk' "$((n / 1000))" "$(( (n % 1000) / 100 ))"
+		local major=$((n / 1000)) minor=$(( (n % 1000) / 100 ))
+		if [ "$minor" -eq 0 ]; then printf '%sk' "$major"
+		else printf '%s.%sk' "$major" "$minor"; fi
 	else
 		printf '%s' "$n"
 	fi
@@ -100,10 +103,11 @@ round_out=$((round_out + call_out))
 # Save state
 echo "${round_start_ctx}|${round_out}|${ctx_tokens}|${round_start_cost}" > "$STATE_FILE"
 
-# Color for used_percentage
-if [ "$used_pct" -ge 80 ]; then
+# Color for compact percentage (how close to auto-compact trigger)
+compact_pct=$((ctx_tokens * 100 / compact_threshold))
+if [ "$compact_pct" -ge 80 ]; then
 	pct_color="$RED"
-elif [ "$used_pct" -ge 50 ]; then
+elif [ "$compact_pct" -ge 50 ]; then
 	pct_color="$YELLOW"
 else
 	pct_color="$GREEN"
@@ -159,11 +163,15 @@ fmt_limit() {
 	else
 		label="?"
 	fi
-	printf '%b%s:%s%%%b' "$color" "$label" "$pct" "$NORMAL"
+	printf '%b%s %s%%%b' "$color" "$label" "$pct" "$NORMAL"
 }
 
-# Shorten model name (e.g. "Opus 4.6 (1M context)" -> "Opus 4.6")
-short_model=$(echo "$model" | sed 's/ (.*)//')
+# Shorten model name, append context size (e.g. "Opus 4.6 (1M context)" -> "O4.6·1M")
+short_model="${model%% (*}"
+short_model="${short_model/Opus /O}"
+short_model="${short_model/Sonnet /S}"
+short_model="${short_model/Haiku /H}"
+short_model="${short_model} $(fmt_tokens "$ctx_max")"
 
 # Show dir/agent/worktree only when context differs from project root
 location=""
@@ -193,15 +201,15 @@ parts="${NORMAL}${short_model}"
 [ -n "$sa_status" ] && parts="${parts} ${sa_status}${NORMAL}"
 parts="${parts} |"
 if [ "$round_in" -gt 0 ] || [ "$round_out" -gt 0 ]; then
-	parts="${parts} ${in_color}↑$(fmt_tokens "$round_in"):$(fmt_pct "$round_in")${NORMAL} ↓$(fmt_tokens "$round_out"):$(fmt_pct "$round_out")"
+	parts="${parts} ${in_color}↑$(fmt_tokens "$round_in") $(fmt_pct "$round_in")${NORMAL} ↓$(fmt_tokens "$round_out") $(fmt_pct "$round_out")"
 fi
-parts="${parts} ${pct_color}$(fmt_tokens "$ctx_tokens"):${used_pct}%${NORMAL}"
+parts="${parts} ${pct_color}$(fmt_tokens "$ctx_tokens") ${compact_pct}%${NORMAL}"
 round_cost=$(awk "BEGIN {printf \"%.2f\", $cost - $round_start_cost}")
 cost_fmt=$(printf '+$%s $%.2f' "$round_cost" "$cost")
 limit_parts=""
 if [ -n "$limit_5h" ]; then
 	limit_parts="$(fmt_limit "$limit_5h" "$limit_5h_reset")"
-	[ -n "$limit_7d" ] && limit_parts="${limit_parts} $(fmt_limit "$limit_7d" "$limit_7d_reset")"
+	[ -n "$limit_7d" ] && limit_parts="${limit_parts} ($(fmt_limit "$limit_7d" "$limit_7d_reset")${NORMAL})"
 	parts="${parts} | ${limit_parts}"
 fi
 parts="${parts} | ${cost_fmt}${RESET}"
