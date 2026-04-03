@@ -3,7 +3,8 @@
 # [model] dir | ↑in ↓out ctx | 2h14m:N% 3d5h:N%
 #
 # Context % is relative to auto-compact threshold, color-coded: green < 50%, yellow 50-79%, red 80%+
-# Per-round input is color-coded: green < 1k, yellow 1-5k, red > 5k
+# Per-round input is color-coded by % of compact threshold: green < 2%, yellow 2-5%, red > 5%
+# Cache hit % is color-coded: green >= 90%, yellow 50-89%, red < 50%
 #
 # Requires: jq
 # Requires: UserPromptSubmit hook running round-reset.sh
@@ -26,12 +27,13 @@ limit_7d=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empt
 limit_7d_reset=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
 cost=$(echo "$input" | jq -r '.cost.total_cost_usd // 0')
 
-# Context window: current tokens in use and max size
-read -r ctx_tokens ctx_max < <(echo "$input" | jq -r '
-	[((.context_window.current_usage.input_tokens // 0) +
-	  (.context_window.current_usage.cache_creation_input_tokens // 0) +
-	  (.context_window.current_usage.cache_read_input_tokens // 0)),
-	 (.context_window.context_window_size // 0)] | @tsv
+# Context window, cache breakdown, and session duration
+read -r ctx_tokens ctx_max cache_read api_ms < <(echo "$input" | jq -r '
+	(.context_window.current_usage) as $u |
+	[(($u.input_tokens // 0) + ($u.cache_creation_input_tokens // 0) + ($u.cache_read_input_tokens // 0)),
+	 (.context_window.context_window_size // 0),
+	 ($u.cache_read_input_tokens // 0),
+	 (.cost.total_api_duration_ms // 0)] | @tsv
 ')
 
 # Auto-compact threshold: the token count that triggers compaction.
@@ -113,10 +115,11 @@ else
 	pct_color="$GREEN"
 fi
 
-# Color for per-round input
-if [ "$round_in" -ge 20000 ]; then
+# Color for per-round input (relative to compact threshold: green < 2%, yellow 2-5%, red > 5%)
+round_in_pct=$((round_in * 100 / compact_threshold))
+if [ "$round_in_pct" -ge 5 ]; then
 	in_color="$RED"
-elif [ "$round_in" -ge 5000 ]; then
+elif [ "$round_in_pct" -ge 2 ]; then
 	in_color="$YELLOW"
 else
 	in_color="$GREEN"
@@ -203,9 +206,24 @@ parts="${parts} |"
 if [ "$round_in" -gt 0 ] || [ "$round_out" -gt 0 ]; then
 	parts="${parts} ${in_color}↑$(fmt_tokens "$round_in") $(fmt_pct "$round_in")${NORMAL} ↓$(fmt_tokens "$round_out") $(fmt_pct "$round_out")"
 fi
-parts="${parts} ${pct_color}$(fmt_tokens "$ctx_tokens") ${compact_pct}%${NORMAL}"
+# Cache hit percentage (per-call)
+if [ "$ctx_tokens" -gt 0 ]; then
+	cache_pct=$((cache_read * 100 / ctx_tokens))
+else
+	cache_pct=0
+fi
+# Color for cache hit rate (inverted: high is good)
+if [ "$cache_pct" -ge 90 ]; then
+	cache_color="$GREEN"
+elif [ "$cache_pct" -ge 50 ]; then
+	cache_color="$YELLOW"
+else
+	cache_color="$RED"
+fi
+parts="${parts} ${pct_color}$(fmt_tokens "$ctx_tokens") ${compact_pct}%${NORMAL} ${cache_color}${cache_pct}%${NORMAL}"
+api_secs=$((api_ms / 1000))
 round_cost=$(awk "BEGIN {printf \"%.2f\", $cost - $round_start_cost}")
-cost_fmt=$(printf '+$%s $%.2f' "$round_cost" "$cost")
+cost_fmt=$(printf '%s +$%s $%.2f' "$(fmt_duration "$api_secs")" "$round_cost" "$cost")
 limit_parts=""
 if [ -n "$limit_5h" ]; then
 	limit_parts="$(fmt_limit "$limit_5h" "$limit_5h_reset")"
