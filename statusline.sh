@@ -41,11 +41,7 @@ else
 	ctx_max=0
 fi
 
-# Per-call tokens
-call_fresh=$(echo "$input" | jq -r '
-	(.context_window.current_usage.cache_creation_input_tokens // 0) +
-	(.context_window.current_usage.input_tokens // 0)
-')
+# Per-call output tokens (input delta is computed from context growth)
 call_out=$(echo "$input" | jq -r '.context_window.current_usage.output_tokens // 0')
 
 # Colors
@@ -79,26 +75,30 @@ fmt_tokens() {
 	fi
 }
 
-# State format: round_in_accum|round_out_accum
-round_in=0
+# State format: round_start_ctx|round_out_accum|last_ctx|round_start_cost
+round_start_ctx=$ctx_tokens
 round_out=0
+last_ctx=$ctx_tokens
+round_start_cost=$cost
 if [ -f "$STATE_FILE" ]; then
-	IFS='|' read -r round_in round_out < "$STATE_FILE"
+	IFS='|' read -r round_start_ctx round_out last_ctx round_start_cost < "$STATE_FILE"
 fi
 
-# If UserPromptSubmit hook signaled a new round, reset accumulators
+# If UserPromptSubmit hook signaled a new round, use last known ctx as baseline
 if [ -f "$NEWROUND_FILE" ]; then
-	round_in=0
+	round_start_ctx=$last_ctx
 	round_out=0
+	round_start_cost=$cost
 	rm -f "$NEWROUND_FILE"
 fi
 
-# Accumulate this call's tokens
-round_in=$((round_in + call_fresh))
+# Input delta = context growth since round start (not accumulated per-call)
+round_in=$((ctx_tokens - round_start_ctx))
+[ "$round_in" -lt 0 ] && round_in=0  # handle compaction
 round_out=$((round_out + call_out))
 
 # Save state
-echo "${round_in}|${round_out}" > "$STATE_FILE"
+echo "${round_start_ctx}|${round_out}|${ctx_tokens}|${round_start_cost}" > "$STATE_FILE"
 
 # Color for used_percentage
 if [ "$used_pct" -ge 80 ]; then
@@ -196,7 +196,8 @@ if [ "$round_in" -gt 0 ] || [ "$round_out" -gt 0 ]; then
 	parts="${parts} ${in_color}↑$(fmt_tokens "$round_in") ($(fmt_pct "$round_in"))${NORMAL} ↓$(fmt_tokens "$round_out") ($(fmt_pct "$round_out"))"
 fi
 parts="${parts} ${pct_color}$(fmt_tokens "$ctx_tokens") (${used_pct}%)${NORMAL}"
-cost_fmt=$(printf '$%.2f' "$cost")
+round_cost=$(awk "BEGIN {printf \"%.2f\", $cost - $round_start_cost}")
+cost_fmt=$(printf '+$%s $%.2f' "$round_cost" "$cost")
 limit_parts=""
 if [ -n "$limit_5h" ]; then
 	limit_parts="$(fmt_limit "$limit_5h" "$limit_5h_reset")"
