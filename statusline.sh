@@ -4,7 +4,7 @@
 #
 # Context % is relative to auto-compact threshold, color-coded: green < 50%, yellow 50-79%, red 80%+
 # Per-round input is color-coded by % of compact threshold: green < 2%, yellow 2-5%, red > 5%
-# Cache hit % is color-coded: green >= 90%, yellow 50-89%, red < 50%
+# Cache hit % is color-coded: green >= 85%, yellow 50-84%, red < 50%
 #
 # Requires: jq
 # Requires: UserPromptSubmit hook running round-reset.sh
@@ -46,8 +46,6 @@ compact_overhead=${COMPACT_OVERHEAD:-33000}
 compact_threshold=$((ctx_max - compact_overhead))
 [ "$compact_threshold" -le 0 ] && compact_threshold=1
 
-# Per-call output tokens (input delta is computed from context growth)
-call_out=$(echo "$input" | jq -r '.context_window.current_usage.output_tokens // 0')
 
 # Colors
 GREEN='\033[32m'
@@ -80,19 +78,17 @@ fmt_tokens() {
 	fi
 }
 
-# State format: round_start_ctx|round_out_accum|last_ctx|round_start_cost
+# State format: round_start_ctx|last_ctx|round_start_cost
 round_start_ctx=$ctx_tokens
-round_out=0
 last_ctx=$ctx_tokens
 round_start_cost=$cost
 if [ -f "$STATE_FILE" ]; then
-	IFS='|' read -r round_start_ctx round_out last_ctx round_start_cost < "$STATE_FILE"
+	IFS='|' read -r round_start_ctx last_ctx round_start_cost < "$STATE_FILE"
 fi
 
 # If UserPromptSubmit hook signaled a new round, use last known ctx as baseline
 if [ -f "$NEWROUND_FILE" ]; then
 	round_start_ctx=$last_ctx
-	round_out=0
 	round_start_cost=$cost
 	rm -f "$NEWROUND_FILE"
 fi
@@ -100,10 +96,9 @@ fi
 # Input delta = context growth since round start (not accumulated per-call)
 round_in=$((ctx_tokens - round_start_ctx))
 [ "$round_in" -lt 0 ] && round_in=0  # handle compaction
-round_out=$((round_out + call_out))
 
 # Save state
-echo "${round_start_ctx}|${round_out}|${ctx_tokens}|${round_start_cost}" > "$STATE_FILE"
+echo "${round_start_ctx}|${ctx_tokens}|${round_start_cost}" > "$STATE_FILE"
 
 # Color for compact percentage (how close to auto-compact trigger)
 compact_pct=$((ctx_tokens * 100 / compact_threshold))
@@ -203,8 +198,8 @@ parts="${NORMAL}${short_model}"
 [ -n "$location" ] && parts="${parts} ${location}"
 [ -n "$sa_status" ] && parts="${parts} ${sa_status}${NORMAL}"
 parts="${parts} |"
-if [ "$round_in" -gt 0 ] || [ "$round_out" -gt 0 ]; then
-	parts="${parts} ${in_color}↑$(fmt_tokens "$round_in") $(fmt_pct "$round_in")${NORMAL} ↓$(fmt_tokens "$round_out") $(fmt_pct "$round_out")"
+if [ "$round_in" -gt 0 ]; then
+	parts="${parts} ${in_color}↑$(fmt_tokens "$round_in") $(fmt_pct "$round_in")${NORMAL} ·"
 fi
 # Cache hit percentage (per-call)
 if [ "$ctx_tokens" -gt 0 ]; then
@@ -213,21 +208,25 @@ else
 	cache_pct=0
 fi
 # Color for cache hit rate (inverted: high is good)
-if [ "$cache_pct" -ge 90 ]; then
+if [ "$cache_pct" -ge 85 ]; then
 	cache_color="$GREEN"
 elif [ "$cache_pct" -ge 50 ]; then
 	cache_color="$YELLOW"
 else
 	cache_color="$RED"
 fi
-parts="${parts} ${pct_color}$(fmt_tokens "$ctx_tokens") ${compact_pct}%${NORMAL} ${cache_color}${cache_pct}%${NORMAL}"
+cache_part=""
+if [ "$cache_pct" -lt 85 ]; then
+	cache_part=" ${cache_color}${cache_pct}%${NORMAL}"
+fi
+parts="${parts} ${pct_color}$(fmt_tokens "$ctx_tokens") ${compact_pct}%${NORMAL}${cache_part}"
 api_secs=$((api_ms / 1000))
 round_cost=$(awk "BEGIN {printf \"%.2f\", $cost - $round_start_cost}")
 cost_fmt=$(printf '%s +$%s $%.2f' "$(fmt_duration "$api_secs")" "$round_cost" "$cost")
 limit_parts=""
 if [ -n "$limit_5h" ]; then
 	limit_parts="$(fmt_limit "$limit_5h" "$limit_5h_reset")"
-	[ -n "$limit_7d" ] && limit_parts="${limit_parts} ($(fmt_limit "$limit_7d" "$limit_7d_reset")${NORMAL})"
+	[ -n "$limit_7d" ] && limit_parts="${limit_parts} · $(fmt_limit "$limit_7d" "$limit_7d_reset")"
 	parts="${parts} | ${limit_parts}"
 fi
 parts="${parts} | ${cost_fmt}${RESET}"
