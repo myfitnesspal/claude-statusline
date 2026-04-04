@@ -130,7 +130,7 @@ echo "=== Per-round input delta ==="
 # First call: round_start_ctx = ctx_tokens, so round_in = 0
 reset_state
 out=$(run 100 500 10000 200 200000)
-assert_not_contains "first call has no round delta" "$out" "↑"
+assert_contains "first call shows zero round delta" "$out" "↑0 0.0%"
 
 # Second call with more tokens: ctx_tokens grows
 # Call 1: ctx_tokens = 10600
@@ -162,7 +162,7 @@ out=$(run 50 200 5000 100 200000)
 # After another call with even less tokens:
 out=$(run 10 100 2000 100 200000)
 # ctx_tokens = 2110, round_start was 5250, delta is negative, clamped to 0
-assert_not_contains "compaction clamps round_in to 0" "$out" "↑"
+assert_contains "compaction clamps round_in to 0" "$out" "↑0 0.0%"
 
 echo ""
 echo "=== Cache hit percentage ==="
@@ -186,6 +186,34 @@ assert_contains "low cache hit shown" "$out" "62%"
 reset_state
 out=$(run 100 500 0 200 200000)
 assert_contains "zero cache hit shown" "$out" "0%"
+
+# Round-level accumulation: bad cache persists even if next call is good
+# Call 1: cache_read=1000, ctx_tokens=1600 (62% per-call)
+# Call 2: cache_read=10000, ctx_tokens=10600 (94% per-call — would hide if per-call)
+# Round total: cache_read=11000, total=12200, round_cache_pct=90% — hidden (healthy)
+reset_state
+out=$(run 100 500 1000 200 200000)
+assert_contains "round cache: first call bad" "$out" "62%"
+out=$(run 100 500 10000 200 200000)
+# Round accumulated: 11000/12200 = 90% — healthy, should be hidden
+assert_not_contains "round cache: good round hides warning" "$out" "62%"
+
+# Round-level: persistent bad cache across round
+# Call 1: cache_read=500, ctx_tokens=1100 (45%)
+# Call 2: cache_read=2000, ctx_tokens=3100 (64%)
+# Round total: cache_read=2500, total=4200, round_cache_pct=59%
+reset_state
+out=$(run 100 500 500 200 200000)
+assert_contains "round cache: call 1 bad" "$out" "45%"
+out=$(run 100 1000 2000 200 200000)
+# Per-call would show 64%, but round total is 2500/4200 = 59%
+assert_contains "round cache: accumulated across round" "$out" "59%"
+
+# New round resets cache accumulators
+echo "reset" > "/tmp/claude-statusline-newround-${SESSION}"
+out=$(run 100 500 10000 200 200000)
+# Fresh round: 10000/10600 = 94% — hidden
+assert_not_contains "round cache: reset clears accumulators" "$out" "94%"
 
 echo ""
 echo "=== Per-round cost ==="

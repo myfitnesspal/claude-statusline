@@ -31,12 +31,17 @@ They aren't in `ctx_tokens` yet â€” they fold into input on the next call. The â
 
 ### Cache hit % hidden when healthy
 Always 99%+ during normal operation. Only shown when < 85%.
+Accumulated across the round (not per-call) so a brief cache miss doesn't flash and vanish.
 
 ### JSON payload
 The statusline hook does NOT receive the `/context` category breakdown (system prompt, tools, messages, etc.). Only aggregate token counts are available. Dump the payload with:
 ```sh
 echo "$input" | jq . > /tmp/claude-statusline-debug.json
 ```
+
+## Development process
+- Red/green TDD: write a failing test first, then implement the fix, then verify the test passes.
+- Run tests with `bash test-statusline.sh`
 
 ## Style preferences
 - Spaces between tokens and percentages (not colons or dots)

@@ -78,27 +78,35 @@ fmt_tokens() {
 	fi
 }
 
-# State format: round_start_ctx|last_ctx|round_start_cost
+# State format: round_start_ctx|last_ctx|round_start_cost|round_cache_read|round_call_tokens
 round_start_ctx=$ctx_tokens
 last_ctx=$ctx_tokens
 round_start_cost=$cost
+round_cache_read=0
+round_call_tokens=0
 if [ -f "$STATE_FILE" ]; then
-	IFS='|' read -r round_start_ctx last_ctx round_start_cost < "$STATE_FILE"
+	IFS='|' read -r round_start_ctx last_ctx round_start_cost round_cache_read round_call_tokens < "$STATE_FILE"
 fi
 
 # If UserPromptSubmit hook signaled a new round, use last known ctx as baseline
 if [ -f "$NEWROUND_FILE" ]; then
 	round_start_ctx=$last_ctx
 	round_start_cost=$cost
+	round_cache_read=0
+	round_call_tokens=0
 	rm -f "$NEWROUND_FILE"
 fi
+
+# Accumulate cache stats for the round
+round_cache_read=$((round_cache_read + cache_read))
+round_call_tokens=$((round_call_tokens + ctx_tokens))
 
 # Input delta = context growth since round start (not accumulated per-call)
 round_in=$((ctx_tokens - round_start_ctx))
 [ "$round_in" -lt 0 ] && round_in=0  # handle compaction
 
 # Save state
-echo "${round_start_ctx}|${ctx_tokens}|${round_start_cost}" > "$STATE_FILE"
+echo "${round_start_ctx}|${ctx_tokens}|${round_start_cost}|${round_cache_read}|${round_call_tokens}" > "$STATE_FILE"
 
 # Color for compact percentage (how close to auto-compact trigger)
 compact_pct=$((ctx_tokens * 100 / compact_threshold))
@@ -198,12 +206,10 @@ parts="${NORMAL}${short_model}"
 [ -n "$location" ] && parts="${parts} ${location}"
 [ -n "$sa_status" ] && parts="${parts} ${sa_status}${NORMAL}"
 parts="${parts} |"
-if [ "$round_in" -gt 0 ]; then
-	parts="${parts} ${in_color}↑$(fmt_tokens "$round_in") $(fmt_pct "$round_in")${NORMAL} ·"
-fi
-# Cache hit percentage (per-call)
-if [ "$ctx_tokens" -gt 0 ]; then
-	cache_pct=$((cache_read * 100 / ctx_tokens))
+parts="${parts} ${in_color}↑$(fmt_tokens "$round_in") $(fmt_pct "$round_in")${NORMAL} ·"
+# Cache hit percentage (accumulated across the round)
+if [ "$round_call_tokens" -gt 0 ]; then
+	cache_pct=$((round_cache_read * 100 / round_call_tokens))
 else
 	cache_pct=0
 fi
@@ -216,8 +222,8 @@ else
 	cache_color="$RED"
 fi
 cache_part=""
-if [ "$cache_pct" -lt 85 ]; then
-	cache_part=" ${cache_color}${cache_pct}%${NORMAL}"
+if [ "$ctx_tokens" -gt 0 ] && [ "$cache_pct" -lt 85 ]; then
+	cache_part=" · ${cache_color}${cache_pct}%${NORMAL}"
 fi
 parts="${parts} ${pct_color}$(fmt_tokens "$ctx_tokens") ${compact_pct}%${NORMAL}${cache_part}"
 api_secs=$((api_ms / 1000))
