@@ -10,31 +10,32 @@
 # Requires: UserPromptSubmit hook running round-reset.sh
 
 input=$(cat)
-session_id=$(echo "$input" | jq -r '.session_id // "default"')
+# Extract all fields in a single jq call (one per line)
+_i=0 _f=()
+while IFS= read -r _line; do _f[$((_i++))]=$_line; done < <(echo "$input" | jq -r '
+	(.context_window.current_usage) as $u |
+	(.session_id // "default"),
+	(.model.display_name // ""),
+	(.workspace.current_dir // .cwd // ""),
+	(.workspace.project_dir // ""),
+	(.agent.name // ""),
+	(.worktree.name // ""),
+	(.rate_limits.five_hour.used_percentage // "" | if type == "number" then floor else . end),
+	(.rate_limits.five_hour.resets_at // ""),
+	(.rate_limits.seven_day.used_percentage // "" | if type == "number" then floor else . end),
+	(.rate_limits.seven_day.resets_at // ""),
+	(.cost.total_cost_usd // 0),
+	(($u.input_tokens // 0) + ($u.cache_creation_input_tokens // 0) + ($u.cache_read_input_tokens // 0)),
+	(.context_window.context_window_size // 0),
+	($u.cache_read_input_tokens // 0),
+	(.cost.total_api_duration_ms // 0)
+')
+session_id=${_f[0]}  model=${_f[1]}  cwd=${_f[2]}  project_dir=${_f[3]}
+agent_name=${_f[4]}  worktree_name=${_f[5]}
+limit_5h=${_f[6]}  limit_5h_reset=${_f[7]}  limit_7d=${_f[8]}  limit_7d_reset=${_f[9]}
+cost=${_f[10]}  ctx_tokens=${_f[11]}  ctx_max=${_f[12]}  cache_read=${_f[13]}  api_ms=${_f[14]}
 STATE_FILE="/tmp/claude-statusline-${session_id}"
 NEWROUND_FILE="/tmp/claude-statusline-newround-${session_id}"
-
-# Extract fields
-model=$(echo "$input" | jq -r '.model.display_name // ""')
-cwd=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // ""')
-project_dir=$(echo "$input" | jq -r '.workspace.project_dir // ""')
-agent_name=$(echo "$input" | jq -r '.agent.name // empty')
-worktree_name=$(echo "$input" | jq -r '.worktree.name // empty')
-# Rate limits (Pro/Max subscribers only)
-limit_5h=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty' | cut -d. -f1)
-limit_5h_reset=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
-limit_7d=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty' | cut -d. -f1)
-limit_7d_reset=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
-cost=$(echo "$input" | jq -r '.cost.total_cost_usd // 0')
-
-# Context window, cache breakdown, and session duration
-read -r ctx_tokens ctx_max cache_read api_ms < <(echo "$input" | jq -r '
-	(.context_window.current_usage) as $u |
-	[(($u.input_tokens // 0) + ($u.cache_creation_input_tokens // 0) + ($u.cache_read_input_tokens // 0)),
-	 (.context_window.context_window_size // 0),
-	 ($u.cache_read_input_tokens // 0),
-	 (.cost.total_api_duration_ms // 0)] | @tsv
-')
 
 # Auto-compact threshold: the token count that triggers compaction.
 # Claude Code computes this as: contextWindow - min(maxOutputTokens, 20000) - 13000
