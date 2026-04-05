@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Tests for statusline.sh context calculations
-# Feeds mock JSON to the statusline and verifies output values.
+# Tests for statusline.sh
+# Feeds mock JSON to the statusline and verifies output values and colors.
 
 set -euo pipefail
 
@@ -57,6 +57,11 @@ EOF
 # Run statusline with mock data, return stripped output
 run() {
 	mock_json "$@" | bash "$STATUSLINE" | strip_ansi
+}
+
+# Run statusline with mock data, return raw output with ANSI codes
+run_raw() {
+	mock_json "$@" | bash "$STATUSLINE"
 }
 
 assert_contains() {
@@ -153,95 +158,139 @@ out=$(CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 COMPACT_OVERHEAD=1000 run 100 500 10000
 assert_contains "override beats COMPACT_OVERHEAD" "$out" "10%"
 
 echo ""
-echo "=== Per-round input delta ==="
+echo "=== Context total color thresholds ==="
 
-# First call: round_start_ctx = ctx_tokens, so round_in = 0
+# Green: < 120K tokens. input=100, cache_creation=500, cache_read=50000 = 50600
 reset_state
-out=$(run 100 500 10000 200 200000)
-assert_contains "first call shows zero round delta" "$out" "↑0 0.0%"
+raw=$(run_raw 100 500 50000 200 200000)
+assert_contains "ctx < 120K is green" "$raw" $'\033[32m50.6k'
 
-# Second call with more tokens: ctx_tokens grows
-# Call 1: ctx_tokens = 10600
-# Call 2: ctx_tokens = 1000 + 5000 + 20000 = 26000
-# round_in = 26000 - 10600 = 15400 = 15.4k
-out=$(run 1000 5000 20000 200 200000)
-assert_contains "second call shows input delta" "$out" "↑15.4k"
+# Yellow: 120K-250K. input=1000, cache_creation=5000, cache_read=120000 = 126000
+reset_state
+raw=$(run_raw 1000 5000 120000 200 1000000)
+assert_contains "ctx >= 120K is yellow" "$raw" $'\033[33m126k'
+
+# Orange: 250K-400K. input=1000, cache_creation=5000, cache_read=260000 = 266000
+reset_state
+raw=$(run_raw 1000 5000 260000 200 1000000)
+assert_contains "ctx >= 250K is orange" "$raw" $'\033[38;5;208m266k'
+
+# Red: >= 400K. input=1000, cache_creation=5000, cache_read=400000 = 406000
+reset_state
+raw=$(run_raw 1000 5000 400000 200 1000000)
+assert_contains "ctx >= 400K is red" "$raw" $'\033[31m406k'
+
+# Boundary: exactly 120000 is yellow (not green)
+reset_state
+raw=$(run_raw 0 0 120000 200 1000000)
+assert_contains "ctx == 120K is yellow" "$raw" $'\033[33m120k'
+
+# Boundary: exactly 250000 is orange (not yellow)
+reset_state
+raw=$(run_raw 0 0 250000 200 1000000)
+assert_contains "ctx == 250K is orange" "$raw" $'\033[38;5;208m250k'
+
+# Boundary: exactly 400000 is red (not orange)
+reset_state
+raw=$(run_raw 0 0 400000 200 1000000)
+assert_contains "ctx == 400K is red" "$raw" $'\033[31m400k'
 
 echo ""
-echo "=== New round resets ==="
+echo "=== Message count ==="
 
-# Signal new round, then call — should reset baseline
-# Previous ctx_tokens was 26000 (from state file's last_ctx)
+# No messages yet: msg should be hidden
+reset_state
+out=$(run 100 500 10000 200 200000)
+assert_not_contains "zero messages hidden" "$out" "msg"
+
+# After 1 round reset: 1msg shown
 echo "reset" > "/tmp/claude-statusline-newround-${SESSION}"
-# New call: ctx_tokens = 500 + 3000 + 30000 = 33500
-# round_in = 33500 - 26000 = 7500 = 7.5k
-out=$(run 500 3000 30000 200 200000)
-assert_contains "new round resets baseline" "$out" "↑7.5k"
+out=$(run 100 500 10000 200 200000)
+assert_contains "1 message shown" "$out" "1msg"
+
+# After another round reset: 2msg
+echo "reset" > "/tmp/claude-statusline-newround-${SESSION}"
+out=$(run 100 500 10000 200 200000)
+assert_contains "messages accumulate" "$out" "2msg"
+
+# Calls within same round don't increment
+out=$(run 100 500 10000 200 200000)
+assert_contains "same round stays at 2msg" "$out" "2msg"
 
 echo ""
-echo "=== Context shrinks after compaction ==="
+echo "=== Message count colors ==="
 
-# After compaction, ctx_tokens drops. round_in should clamp to 0
-# Current state has round_start_ctx from previous call
-# New call with small ctx: 50 + 200 + 5000 = 5250
-echo "reset" > "/tmp/claude-statusline-newround-${SESSION}"
-out=$(run 50 200 5000 100 200000)
-# round_start = last_ctx from state. Now ctx < start, so round_in = 0
-# After another call with even less tokens:
-out=$(run 10 100 2000 100 200000)
-# ctx_tokens = 2110, round_start was 5250, delta is negative, clamped to 0
-assert_contains "compaction clamps round_in to 0" "$out" "↑0 0.0%"
+# State format v2: 2|round_start_cost|msg_count|last_ts
+
+# Green: 5 messages
+reset_state
+echo "2|1.50|5|0" > "/tmp/claude-statusline-${SESSION}"
+raw=$(run_raw 100 500 10000 200 200000)
+assert_contains "5msg is green" "$raw" $'\033[32m5msg'
+
+# Yellow: 10 messages (boundary)
+reset_state
+echo "2|1.50|10|0" > "/tmp/claude-statusline-${SESSION}"
+raw=$(run_raw 100 500 10000 200 200000)
+assert_contains "10msg is yellow" "$raw" $'\033[33m10msg'
+
+# Orange: 18 messages (boundary)
+reset_state
+echo "2|1.50|18|0" > "/tmp/claude-statusline-${SESSION}"
+raw=$(run_raw 100 500 10000 200 200000)
+assert_contains "18msg is orange" "$raw" $'\033[38;5;208m18msg'
+
+# Red: 24 messages (boundary)
+reset_state
+echo "2|1.50|24|0" > "/tmp/claude-statusline-${SESSION}"
+raw=$(run_raw 100 500 10000 200 200000)
+assert_contains "24msg is red" "$raw" $'\033[31m24msg'
 
 echo ""
-echo "=== Cache hit percentage ==="
+echo "=== Cache age timer ==="
 
-# cache_read = 10000, ctx_tokens = 10600
-# cache_pct = 10000 * 100 / 10600 = 94%
-# >= 85% so should NOT appear (hidden when healthy)
+# Warm cache (< 3 minutes): hidden
+# Set last_ts to now (0 seconds ago)
+reset_state
+now=$(date +%s)
+echo "2|1.50|0|${now}" > "/tmp/claude-statusline-${SESSION}"
+out=$(run 100 500 10000 200 200000)
+assert_not_contains "warm cache hidden (recent)" "$out" "·"
+# Verify no duration marker appears in context section
+# The only · that should appear is section separators, not in context
+
+# At risk (3-5 minutes): yellow, shown
+reset_state
+stale_ts=$(($(date +%s) - 240))  # 4 minutes ago
+echo "2|1.50|0|${stale_ts}" > "/tmp/claude-statusline-${SESSION}"
+out=$(run 100 500 10000 200 200000)
+assert_contains "at-risk cache shows 4m" "$out" "4m"
+
+# Cold (> 5 minutes): red, shown
+reset_state
+cold_ts=$(($(date +%s) - 420))  # 7 minutes ago
+echo "2|1.50|0|${cold_ts}" > "/tmp/claude-statusline-${SESSION}"
+out=$(run 100 500 10000 200 200000)
+assert_contains "cold cache shows 7m" "$out" "7m"
+
+# Cache age color: at-risk is yellow
+reset_state
+stale_ts=$(($(date +%s) - 240))
+echo "2|1.50|0|${stale_ts}" > "/tmp/claude-statusline-${SESSION}"
+raw=$(run_raw 100 500 10000 200 200000)
+assert_contains "at-risk cache is yellow" "$raw" $'\033[33m4m'
+
+# Cache age color: cold is red
+reset_state
+cold_ts=$(($(date +%s) - 420))
+echo "2|1.50|0|${cold_ts}" > "/tmp/claude-statusline-${SESSION}"
+raw=$(run_raw 100 500 10000 200 200000)
+assert_contains "cold cache is red" "$raw" $'\033[31m7m'
+
+# First call of session: no previous timestamp, no cache indicator
 reset_state
 out=$(run 100 500 10000 200 200000)
-assert_not_contains "high cache hit hidden" "$out" "94%"
-
-# Low cache: cache_read = 1000, ctx_tokens = 100 + 500 + 1000 = 1600
-# cache_pct = 1000 * 100 / 1600 = 62%
-# < 85% so should appear
-reset_state
-out=$(run 100 500 1000 200 200000)
-assert_contains "low cache hit shown" "$out" "62%"
-
-# Very low cache: cache_read = 0, ctx_tokens = 100 + 500 + 0 = 600
-# cache_pct = 0%
-reset_state
-out=$(run 100 500 0 200 200000)
-assert_contains "zero cache hit shown" "$out" "0%"
-
-# Round-level accumulation: bad cache persists even if next call is good
-# Call 1: cache_read=1000, ctx_tokens=1600 (62% per-call)
-# Call 2: cache_read=10000, ctx_tokens=10600 (94% per-call — would hide if per-call)
-# Round total: cache_read=11000, total=12200, round_cache_pct=90% — hidden (healthy)
-reset_state
-out=$(run 100 500 1000 200 200000)
-assert_contains "round cache: first call bad" "$out" "62%"
-out=$(run 100 500 10000 200 200000)
-# Round accumulated: 11000/12200 = 90% — healthy, should be hidden
-assert_not_contains "round cache: good round hides warning" "$out" "62%"
-
-# Round-level: persistent bad cache across round
-# Call 1: cache_read=500, ctx_tokens=1100 (45%)
-# Call 2: cache_read=2000, ctx_tokens=3100 (64%)
-# Round total: cache_read=2500, total=4200, round_cache_pct=59%
-reset_state
-out=$(run 100 500 500 200 200000)
-assert_contains "round cache: call 1 bad" "$out" "45%"
-out=$(run 100 1000 2000 200 200000)
-# Per-call would show 64%, but round total is 2500/4200 = 59%
-assert_contains "round cache: accumulated across round" "$out" "59%"
-
-# New round resets cache accumulators
-echo "reset" > "/tmp/claude-statusline-newround-${SESSION}"
-out=$(run 100 500 10000 200 200000)
-# Fresh round: 10000/10600 = 94% — hidden
-assert_not_contains "round cache: reset clears accumulators" "$out" "94%"
+assert_not_contains "first call: no cache age" "$out" "0m"
 
 echo ""
 echo "=== Per-round cost ==="
@@ -285,6 +334,14 @@ out=$(run 100 500 10000 200 200000)
 assert_not_contains "no output token display" "$out" "↓"
 
 echo ""
+echo "=== Per-round input removed ==="
+
+# Per-round input delta should not appear
+reset_state
+out=$(run 100 500 10000 200 200000)
+assert_not_contains "no round input arrow" "$out" "↑"
+
+echo ""
 echo "=== API time ==="
 
 reset_state
@@ -296,6 +353,17 @@ assert_contains "API time shown" "$out" "1m"
 reset_state
 out=$(run 100 500 10000 200 200000 1.50 3661000)
 assert_contains "API time hours+minutes" "$out" "1h1m"
+
+echo ""
+echo "=== State format v2 migration ==="
+
+# Old v1 state file (5 fields, no version prefix) should be ignored
+reset_state
+echo "10600|26000|1.50|11000|12200" > "/tmp/claude-statusline-${SESSION}"
+out=$(run 100 500 10000 200 200000 1.50)
+# Should reset to defaults: round_start_cost=$cost (1.50), msg_count=0
+assert_contains "v1 state: round cost resets" "$out" "+\$0.00"
+assert_not_contains "v1 state: no msg shown" "$out" "msg"
 
 echo ""
 echo "=== Results ==="

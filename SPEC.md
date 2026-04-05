@@ -8,7 +8,12 @@
 
 Example:
 ```
-O4.6 200k | ↑15.4k 9.2% · 34k 17% | 2h14m 11% · 3d5h 12% | 19m +$0.05 $0.67
+O4.6 200k | 34k 17% · 12msg | 2h14m 11% · 3d5h 12% | 19m +$0.05 $0.67
+```
+
+With stale cache:
+```
+O4.6 200k | 34k 17% · 12msg · 7m | 2h14m 11% · 3d5h 12% | 19m +$0.05 $0.67
 ```
 
 ## Sections
@@ -21,14 +26,13 @@ O4.6 200k | ↑15.4k 9.2% · 34k 17% | 2h14m 11% · 3d5h 12% | 19m +$0.05 $0.67
 - Location shown only when cwd differs from project root, or agent/worktree active
 - Subagent governance status shown only when subagent hooks are installed
 
-### Section 2: Context usage
-`↑15.4k 9.2% · 34k 17% [cache%]`
+### Section 2: Context health
+`34k 17% · 12msg · 7m`
 
-- **↑ (round input delta)**: context growth since round start, computed as `ctx_tokens - round_start_ctx`. Only shown when > 0. Percentage is relative to compact threshold.
-- **· separator**: dot separates per-round from session-total fields
-- **Total context**: absolute token count and percentage of compact threshold
-- **Cache hit %**: only shown when < 85% (yellow 50-84%, red < 50%). Hidden when healthy since it's almost always 99%+.
-- Output tokens are NOT shown — they aren't in context yet (will fold into ↑ next call)
+- **Total context**: absolute token count colored by retrieval quality thresholds, plus compact threshold percentage (informational — tells you when auto-compact fires)
+- **Message count**: user messages in session, colored by multi-turn degradation thresholds. Hidden when 0.
+- **Cache age**: time since last API call, predicts whether prompt cache is warm. Hidden when < 3 minutes (cache warm). Shown yellow at 3-5 minutes (at risk), red > 5 minutes (cold, ~5 minute TTL expired).
+- Output tokens are NOT shown — they aren't in context yet (will fold in on next call)
 
 ### Section 3: Rate limits
 `2h14m 11% · 3d5h 12%`
@@ -47,29 +51,41 @@ O4.6 200k | ↑15.4k 9.2% · 34k 17% | 2h14m 11% · 3d5h 12% | 19m +$0.05 $0.67
 
 ## Key Design Decisions
 
-### All percentages are relative to compact threshold, not context window
-The auto-compact threshold is the actionable limit. Showing `17%` of a 200K window is less useful than showing `20%` of the compaction trigger point. This is why we compute `compact_threshold = ctx_max - 33000`.
+### Context colored by absolute token thresholds, not compact percentage
+The compact percentage tells you when auto-compact fires, but says nothing about retrieval quality. Research (MRCR v2 benchmarks, practitioner needle tests) shows retrieval degrades at specific absolute token thresholds regardless of window size. A 200K session on a 1M window has the same retrieval quality as 200K on a 200K window. The compact percentage is still displayed as informational text.
 
-### Per-round input uses context delta, not accumulated fresh tokens
-Earlier versions accumulated `cache_creation + input_tokens` across API calls. This was wrong — each API call resends the full conversation, so "fresh" tokens get double-counted. The correct metric is `ctx_tokens_now - ctx_tokens_at_round_start`.
+### Two independent degradation axes
+Token volume degrades retrieval accuracy (attention dilution, "lost in the middle" effect). User message count degrades reliability through a different mechanism (accumulated assumptions, wrong-turn lock-in). Research shows 39% average performance drop in multi-turn vs single-turn. These are displayed as separate colored indicators with no interaction formula.
+
+### Per-round input delta removed
+Per-round input size is not an independent degradation factor. A single turn loading 80K from file reads is healthier than four 20K turns of conversational refinement. What matters is cumulative total tokens and conversational structure, not per-turn volume.
+
+### Cache age replaces cache hit percentage
+A session-averaged cache hit percentage isn't actionable. What matters is whether the cache is warm right now, which predicts whether the next message will be fast and cheap or slow and expensive. The ~5 minute TTL means a simple timer since the last API call is the most predictive signal.
 
 ### Round boundaries are set by UserPromptSubmit hook
-`round-reset.sh` creates a marker file on each user prompt. The statusline reads the last known `ctx_tokens` from state as the baseline for the new round.
-
-### Cache hit % is hidden when healthy
-Cache hits are 99%+ during normal operation (prompt prefix caching). Only worth showing when something's wrong (after compaction, cache timeout, first call).
+`round-reset.sh` creates a marker file on each user prompt. The statusline increments the message counter and resets round cost when it sees this marker.
 
 ### Output tokens are not displayed
-Output tokens from the current call aren't in `ctx_tokens` yet — they fold into input on the next call. Showing them separately was misleading because they don't "add up" with the context total. The ↑ delta already captures everything that grows the context.
+Output tokens from the current call aren't in `ctx_tokens` yet — they fold into input on the next call.
 
 ## Color Thresholds
 
-| Field | Green | Yellow | Red |
-|-------|-------|--------|-----|
-| Context % (of compact) | < 50% | 50-79% | >= 80% |
-| Per-round input % | < 2% of compact | 2-5% | > 5% |
-| Cache hit % | >= 85% (hidden) | 50-84% | < 50% |
-| Rate limits | < 50% | 50-79% | >= 80% |
+| Field | Green | Yellow | Orange | Red |
+|-------|-------|--------|--------|-----|
+| Context total (tokens) | < 120K | 120-250K | 250-400K | >= 400K |
+| Message count | 0-9 | 10-17 | 18-23 | >= 24 |
+| Cache age | < 3m (hidden) | 3-5m | — | > 5m |
+| Rate limits | < 50% | 50-79% | — | >= 80% |
+
+### Context threshold rationale
+- **Green (< 120K)**: Peak retrieval. ~perfect MRCR. Where most Claude Code sessions land.
+- **Yellow (120-250K)**: 93% MRCR. Proactive `/compact` with task-focused instructions worth considering.
+- **Orange (250-400K)**: Single-needle retrieval still good, multi-needle starts degrading. Consider starting fresh if context is conversational rather than document-loaded.
+- **Red (>= 400K)**: Partial retrieval. Details get hallucinated. Start fresh unless deep debugging where losing context is worse.
+
+### Message count threshold rationale
+Narrowing intervals (10, 8, 6) because multi-turn degradation compounds. Based on Microsoft/Salesforce study (Laban et al., May 2025) testing 15 LLMs across 200K+ conversations.
 
 ## Available JSON Fields
 
@@ -117,7 +133,10 @@ From the `StatuslineUpdate` hook payload (dumped via `jq . > /tmp/debug.json`):
 ## State Management
 
 State file: `/tmp/claude-statusline-{session_id}`
-Format: `round_start_ctx|last_ctx|round_start_cost`
+Format (v2): `2|round_start_cost|msg_count|last_ts`
+
+- Version prefix `2` distinguishes from old format; old state files are reset on read.
+- `last_ts` is the epoch timestamp of the last statusline render, used to compute cache age.
 
 New-round marker: `/tmp/claude-statusline-newround-{session_id}`
 Created by `round-reset.sh` on `UserPromptSubmit` hook, consumed by statusline on next update.

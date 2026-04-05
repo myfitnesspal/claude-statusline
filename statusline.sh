@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Claude Code Status Line
-# [model] dir | ↑in ↓out ctx | 2h14m:N% 3d5h:N%
+# [model] | [context] | [rate limits] | [cost]
 #
-# Context % is relative to auto-compact threshold, color-coded: green < 50%, yellow 50-79%, red 80%+
-# Per-round input is color-coded by % of compact threshold: green < 2%, yellow 2-5%, red > 5%
-# Cache hit % is color-coded: green >= 85%, yellow 50-84%, red < 50%
+# Context total colored by absolute token thresholds (retrieval quality):
+#   green < 120K, yellow 120-250K, orange 250-400K, red >= 400K
+# Message count colored by multi-turn degradation thresholds:
+#   green < 10, yellow 10-17, orange 18-23, red >= 24
+# Cache age shown when >= 3 minutes since last API call (yellow 3-5m, red > 5m)
 #
 # Requires: jq
 # Requires: UserPromptSubmit hook running round-reset.sh
@@ -27,13 +29,12 @@ while IFS= read -r _line; do _f[$((_i++))]=$_line; done < <(echo "$input" | jq -
 	(.cost.total_cost_usd // 0),
 	(($u.input_tokens // 0) + ($u.cache_creation_input_tokens // 0) + ($u.cache_read_input_tokens // 0)),
 	(.context_window.context_window_size // 0),
-	($u.cache_read_input_tokens // 0),
 	(.cost.total_api_duration_ms // 0)
 ')
 session_id=${_f[0]}  model=${_f[1]}  cwd=${_f[2]}  project_dir=${_f[3]}
 agent_name=${_f[4]}  worktree_name=${_f[5]}
 limit_5h=${_f[6]}  limit_5h_reset=${_f[7]}  limit_7d=${_f[8]}  limit_7d_reset=${_f[9]}
-cost=${_f[10]}  ctx_tokens=${_f[11]}  ctx_max=${_f[12]}  cache_read=${_f[13]}  api_ms=${_f[14]}
+cost=${_f[10]}  ctx_tokens=${_f[11]}  ctx_max=${_f[12]}  api_ms=${_f[13]}
 STATE_FILE="/tmp/claude-statusline-${session_id}"
 NEWROUND_FILE="/tmp/claude-statusline-newround-${session_id}"
 
@@ -52,17 +53,10 @@ fi
 # Colors
 GREEN='\033[32m'
 YELLOW='\033[33m'
+ORANGE='\033[38;5;208m'
 RED='\033[31m'
 NORMAL='\033[38;5;245m'
 RESET='\033[0m'
-
-# Format tokens as percentage of compact threshold (e.g. "0.6%")
-fmt_pct() {
-	local n=$1
-	local whole=$((n * 100 / compact_threshold))
-	local frac=$(( (n * 1000 / compact_threshold) % 10 ))
-	printf '%s.%s%%' "$whole" "$frac"
-}
 
 # Human-friendly token formatting (1234 -> 1.2k, 200000 -> 200k, 1000000 -> 1M)
 fmt_tokens() {
@@ -80,54 +74,46 @@ fmt_tokens() {
 	fi
 }
 
-# State format: round_start_ctx|last_ctx|round_start_cost|round_cache_read|round_call_tokens
-round_start_ctx=$ctx_tokens
-last_ctx=$ctx_tokens
+# State format v2: version|round_start_cost|msg_count|last_ts
 round_start_cost=$cost
-round_cache_read=0
-round_call_tokens=0
+msg_count=0
+last_ts=0
 if [ -f "$STATE_FILE" ]; then
-	IFS='|' read -r round_start_ctx last_ctx round_start_cost round_cache_read round_call_tokens < "$STATE_FILE"
+	IFS='|' read -r _ver _rsc _mc _lt < "$STATE_FILE"
+	if [ "$_ver" = "2" ]; then
+		round_start_cost=$_rsc
+		msg_count=${_mc:-0}
+		last_ts=${_lt:-0}
+	fi
 fi
 
-# If UserPromptSubmit hook signaled a new round, use last known ctx as baseline
+# If UserPromptSubmit hook signaled a new round, reset round metrics
 if [ -f "$NEWROUND_FILE" ]; then
-	round_start_ctx=$last_ctx
 	round_start_cost=$cost
-	round_cache_read=0
-	round_call_tokens=0
+	msg_count=$((msg_count + 1))
 	rm -f "$NEWROUND_FILE"
 fi
 
-# Accumulate cache stats for the round
-round_cache_read=$((round_cache_read + cache_read))
-round_call_tokens=$((round_call_tokens + ctx_tokens))
-
-# Input delta = context growth since round start (not accumulated per-call)
-round_in=$((ctx_tokens - round_start_ctx))
-[ "$round_in" -lt 0 ] && round_in=0  # handle compaction
-
-# Save state
-echo "${round_start_ctx}|${ctx_tokens}|${round_start_cost}|${round_cache_read}|${round_call_tokens}" > "$STATE_FILE"
-
-# Color for compact percentage (how close to auto-compact trigger)
-compact_pct=$((ctx_tokens * 100 / compact_threshold))
-if [ "$compact_pct" -ge 80 ]; then
-	pct_color="$RED"
-elif [ "$compact_pct" -ge 50 ]; then
-	pct_color="$YELLOW"
-else
-	pct_color="$GREEN"
+# Cache age: seconds since last statusline render
+now=$(date +%s)
+cache_age=0
+if [ "$last_ts" -gt 0 ]; then
+	cache_age=$((now - last_ts))
 fi
 
-# Color for per-round input (relative to compact threshold: green < 2%, yellow 2-5%, red > 5%)
-round_in_pct=$((round_in * 100 / compact_threshold))
-if [ "$round_in_pct" -ge 5 ]; then
-	in_color="$RED"
-elif [ "$round_in_pct" -ge 2 ]; then
-	in_color="$YELLOW"
+# Save state
+echo "2|${round_start_cost}|${msg_count}|${now}" > "$STATE_FILE"
+
+# Color for total context: absolute token thresholds (retrieval quality)
+compact_pct=$((ctx_tokens * 100 / compact_threshold))
+if [ "$ctx_tokens" -ge 400000 ]; then
+	ctx_color="$RED"
+elif [ "$ctx_tokens" -ge 250000 ]; then
+	ctx_color="$ORANGE"
+elif [ "$ctx_tokens" -ge 120000 ]; then
+	ctx_color="$YELLOW"
 else
-	in_color="$GREEN"
+	ctx_color="$GREEN"
 fi
 
 # Format duration from seconds (e.g. 3661 -> "1h1m", 90 -> "1m", 86400 -> "1d")
@@ -156,7 +142,7 @@ fmt_limit() {
 	if [ -z "$pct" ]; then
 		return
 	fi
-	local color="$GREEN"
+	local color="$NORMAL"
 	if [ "$pct" -ge 80 ]; then
 		color="$RED"
 	elif [ "$pct" -ge 50 ]; then
@@ -204,30 +190,34 @@ if [ -f "$HOME/src/claude-config/hooks/subagent-status.sh" ]; then
 	fi
 fi
 
+# Message count color (multi-turn degradation)
+if [ "$msg_count" -ge 24 ]; then
+	msg_color="$RED"
+elif [ "$msg_count" -ge 18 ]; then
+	msg_color="$ORANGE"
+elif [ "$msg_count" -ge 10 ]; then
+	msg_color="$YELLOW"
+else
+	msg_color="$GREEN"
+fi
+msg_part=""
+if [ "$msg_count" -gt 0 ]; then
+	msg_part=" · ${msg_color}${msg_count}msg${NORMAL}"
+fi
+
+# Cache age indicator (hidden when warm < 3 minutes)
+cache_part=""
+if [ "$cache_age" -ge 300 ]; then
+	cache_part=" · ${RED}$(fmt_duration "$cache_age")${NORMAL}"
+elif [ "$cache_age" -ge 180 ]; then
+	cache_part=" · ${YELLOW}$(fmt_duration "$cache_age")${NORMAL}"
+fi
+
 parts="${NORMAL}${short_model}"
 [ -n "$location" ] && parts="${parts} ${location}"
 [ -n "$sa_status" ] && parts="${parts} ${sa_status}${NORMAL}"
 parts="${parts} |"
-parts="${parts} ${in_color}↑$(fmt_tokens "$round_in") $(fmt_pct "$round_in")${NORMAL} ·"
-# Cache hit percentage (accumulated across the round)
-if [ "$round_call_tokens" -gt 0 ]; then
-	cache_pct=$((round_cache_read * 100 / round_call_tokens))
-else
-	cache_pct=0
-fi
-# Color for cache hit rate (inverted: high is good)
-if [ "$cache_pct" -ge 85 ]; then
-	cache_color="$GREEN"
-elif [ "$cache_pct" -ge 50 ]; then
-	cache_color="$YELLOW"
-else
-	cache_color="$RED"
-fi
-cache_part=""
-if [ "$ctx_tokens" -gt 0 ] && [ "$cache_pct" -lt 85 ]; then
-	cache_part=" · ${cache_color}${cache_pct}%${NORMAL}"
-fi
-parts="${parts} ${pct_color}$(fmt_tokens "$ctx_tokens") ${compact_pct}%${NORMAL}${cache_part}"
+parts="${parts} ${ctx_color}$(fmt_tokens "$ctx_tokens") ${compact_pct}%${NORMAL}${msg_part}${cache_part}"
 api_secs=$((api_ms / 1000))
 round_cost=$(awk "BEGIN {printf \"%.2f\", $cost - $round_start_cost}")
 cost_fmt=$(printf '%s +$%s $%.2f' "$(fmt_duration "$api_secs")" "$round_cost" "$cost")

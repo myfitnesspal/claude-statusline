@@ -11,8 +11,14 @@ Custom statusline for Claude Code, displayed via the `StatuslineUpdate` hook.
 
 ## Important context
 
+### Context color thresholds
+Total context is colored by absolute token count (Opus 4.6 MRCR retrieval benchmarks), NOT by compact percentage. Green < 120K, yellow 120-250K, orange 250-400K, red >= 400K. The compact percentage is still displayed as informational text.
+
+### Two degradation axes
+Token volume degrades retrieval (colored on the token count). User message count degrades multi-turn reliability (colored separately). These are independent — no interaction formula.
+
 ### Auto-compact threshold
-All context percentages are relative to the auto-compact trigger, NOT the raw context window.
+The compact percentage shown is relative to the auto-compact trigger, NOT the raw context window.
 Claude Code computes: `threshold = contextWindow - min(maxOutputTokens, 20000) - 13000`.
 We approximate as `ctx_max - 33000` (configurable via `COMPACT_OVERHEAD` env var).
 
@@ -23,15 +29,8 @@ strings $(which claude) | grep -oE '.{0,200}IeH.{0,200}'
 ```
 The minified function names (IeH, yU, PYH) will change between versions. Look for the pattern: `tokens=${...} threshold=${...} effectiveWindow=${...}`.
 
-### Per-round input delta
-Uses context growth (`ctx_tokens - round_start_ctx`), NOT accumulated per-call fresh tokens. The old approach double-counted because each API call resends the full conversation.
-
-### Output tokens are intentionally excluded
-They aren't in `ctx_tokens` yet — they fold into input on the next call. The ↑ delta already captures all context growth.
-
-### Cache hit % hidden when healthy
-Always 99%+ during normal operation. Only shown when < 85%.
-Accumulated across the round (not per-call) so a brief cache miss doesn't flash and vanish.
+### Cache age replaces cache hit %
+Shows time since last API call, predicting whether the ~5 minute prompt cache TTL has expired. Hidden when warm (< 3 minutes). Yellow 3-5 minutes (at risk), red > 5 minutes (cold).
 
 ### JSON payload
 The statusline hook does NOT receive the `/context` category breakdown (system prompt, tools, messages, etc.). Only aggregate token counts are available. Dump the payload with:
@@ -48,7 +47,7 @@ echo "$input" | jq . > /tmp/claude-statusline-debug.json
 - Dot (·) separators between field groups within a section
 - Pipe (|) separators between sections
 - No labels — use position and color to convey meaning
-- Hide fields when they're not actionable (e.g. cache at 99%)
+- Hide fields when they're not actionable (e.g. cache age when warm)
 - Model abbreviated: Opus->O, Sonnet->S, Haiku->H
 - Token formatting drops trailing `.0` (200k not 200.0k)
 - Bash parameter expansion preferred over sed/awk forks
