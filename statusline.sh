@@ -38,13 +38,14 @@ STATE_FILE="/tmp/claude-statusline-${session_id}"
 NEWROUND_FILE="/tmp/claude-statusline-newround-${session_id}"
 
 # Auto-compact threshold: the token count that triggers compaction.
-# Claude Code computes this as: contextWindow - min(maxOutputTokens, 20000) - 13000
-# e.g. Opus 4.6 with 200K context, ~16K max output: 200K - 16K - 13K = ~171K (~85%)
-# e.g. Opus 4.6 with 1M context: 1M - 16K - 13K = ~971K (~97%)
-# We approximate the reserved overhead as 33000 (20K output cap + 13K buffer).
-# Override with COMPACT_OVERHEAD env var if needed.
-compact_overhead=${COMPACT_OVERHEAD:-33000}
-compact_threshold=$((ctx_max - compact_overhead))
+# If CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is set (e.g. 85), use it as the threshold percentage.
+# Otherwise, approximate: contextWindow - COMPACT_OVERHEAD (default 33000).
+if [ -n "${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-}" ]; then
+	compact_threshold=$((ctx_max * CLAUDE_AUTOCOMPACT_PCT_OVERRIDE / 100))
+else
+	compact_overhead=${COMPACT_OVERHEAD:-33000}
+	compact_threshold=$((ctx_max - compact_overhead))
+fi
 [ "$compact_threshold" -le 0 ] && compact_threshold=1
 
 

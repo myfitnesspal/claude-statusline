@@ -125,6 +125,34 @@ out=$(run 500 5000 160000 200 200000)
 assert_contains "compact_pct near limit" "$out" "99%"
 
 echo ""
+echo "=== CLAUDE_AUTOCOMPACT_PCT_OVERRIDE ==="
+
+# With override=85, threshold = 200000 * 85 / 100 = 170000
+# ctx_tokens = 10600, compact_pct = 10600 * 100 / 170000 = 6%
+reset_state
+out=$(CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=85 run 100 500 10000 200 200000)
+assert_contains "override 85% with 200K window" "$out" "6%"
+
+# With override=50, threshold = 200000 * 50 / 100 = 100000
+# ctx_tokens = 10600, compact_pct = 10600 * 100 / 100000 = 10%
+reset_state
+out=$(CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 run 100 500 10000 200 200000)
+assert_contains "override 50% shifts threshold" "$out" "10%"
+
+# With override=97, threshold = 1000000 * 97 / 100 = 970000
+# ctx_tokens = 10600, compact_pct = 10600 * 100 / 970000 = 1%
+reset_state
+out=$(CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=97 run 100 500 10000 200 1000000)
+assert_contains "override 97% with 1M window" "$out" "1%"
+
+# Override takes precedence over COMPACT_OVERHEAD
+reset_state
+out=$(CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 COMPACT_OVERHEAD=1000 run 100 500 10000 200 200000)
+# threshold = 100000 (from override), NOT 199000 (from overhead)
+# compact_pct = 10600 * 100 / 100000 = 10%
+assert_contains "override beats COMPACT_OVERHEAD" "$out" "10%"
+
+echo ""
 echo "=== Per-round input delta ==="
 
 # First call: round_start_ctx = ctx_tokens, so round_in = 0
