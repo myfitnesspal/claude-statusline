@@ -6,6 +6,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STATUSLINE="$SCRIPT_DIR/statusline.sh"
+
+# Ensure env vars don't leak into tests
+unset CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
+unset COMPACT_OVERHEAD
 PASS=0
 FAIL=0
 SESSION="test-$$"
@@ -110,21 +114,21 @@ assert_contains "ctx_tokens sums all input components" "$out" "106k"
 echo ""
 echo "=== Compact threshold ==="
 
-# compact_threshold = ctx_max - 33000
-# With 200K window: threshold = 167000
+# usable_cap = min(compact_threshold, 400000)
+# With 200K window: compact_threshold=167000, cap=167000
 # compact_pct = 10600 * 100 / 167000 = 6%
 reset_state
 out=$(run 100 500 10000 200 200000)
 assert_contains "compact_pct with 200K window" "$out" "6%"
 
-# With 1M window: threshold = 967000
-# compact_pct = 10600 * 100 / 967000 = 1%
+# With 1M window: compact_threshold=967000, cap=400000
+# compact_pct = 10600 * 100 / 400000 = 2%
 reset_state
 out=$(run 100 500 10000 200 1000000)
-assert_contains "compact_pct with 1M window" "$out" "1%"
+assert_contains "compact_pct with 1M window" "$out" "2%"
 
 # Higher usage: 500 + 5000 + 160000 = 165500
-# compact_pct = 165500 * 100 / 167000 = 99%
+# 200K window: cap=167000, compact_pct = 165500 * 100 / 167000 = 99%
 reset_state
 out=$(run 500 5000 160000 200 200000)
 assert_contains "compact_pct near limit" "$out" "99%"
@@ -144,11 +148,11 @@ reset_state
 out=$(CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 run 100 500 10000 200 200000)
 assert_contains "override 50% shifts threshold" "$out" "10%"
 
-# With override=97, threshold = 1000000 * 97 / 100 = 970000
-# ctx_tokens = 10600, compact_pct = 10600 * 100 / 970000 = 1%
+# With override=97, threshold = 1000000 * 97 / 100 = 970000, cap=400000
+# ctx_tokens = 10600, compact_pct = 10600 * 100 / 400000 = 2%
 reset_state
 out=$(CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=97 run 100 500 10000 200 1000000)
-assert_contains "override 97% with 1M window" "$out" "1%"
+assert_contains "override 97% with 1M window" "$out" "2%"
 
 # Override takes precedence over COMPACT_OVERHEAD
 reset_state

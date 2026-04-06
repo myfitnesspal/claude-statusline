@@ -29,7 +29,7 @@ O4.6 200k | 34k 17% · 12msg · 7m | 2h14m 11% · 3d5h 12% | 19m +$0.05 $0.67
 ### Section 2: Context health
 `34k 17% · 12msg · 7m`
 
-- **Total context**: absolute token count colored by retrieval quality thresholds, plus compact threshold percentage (informational — tells you when auto-compact fires)
+- **Total context**: absolute token count colored by retrieval quality thresholds, plus usage percentage relative to whichever limit binds first: the 400K retrieval quality ceiling or the auto-compact threshold (whichever is smaller)
 - **Message count**: user messages in session, colored by multi-turn degradation thresholds. Hidden when 0.
 - **Cache age**: time since last API call, predicts whether prompt cache is warm. Hidden when < 3 minutes (cache warm). Shown yellow at 3-5 minutes (at risk), red > 5 minutes (cold, ~5 minute TTL expired).
 - Output tokens are NOT shown — they aren't in context yet (will fold in on next call)

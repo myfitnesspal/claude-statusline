@@ -105,7 +105,8 @@ fi
 echo "2|${round_start_cost}|${msg_count}|${now}" > "$STATE_FILE"
 
 # Color for total context: absolute token thresholds (retrieval quality)
-compact_pct=$((ctx_tokens * 100 / compact_threshold))
+usable_cap=$((compact_threshold < 400000 ? compact_threshold : 400000))
+compact_pct=$((ctx_tokens * 100 / usable_cap))
 if [ "$ctx_tokens" -ge 400000 ]; then
 	ctx_color="$RED"
 elif [ "$ctx_tokens" -ge 250000 ]; then

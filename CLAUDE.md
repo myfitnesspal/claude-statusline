@@ -18,9 +18,10 @@ Total context is colored by absolute token count (Opus 4.6 MRCR retrieval benchm
 Token volume degrades retrieval (colored on the token count). User message count degrades multi-turn reliability (colored separately). These are independent — no interaction formula.
 
 ### Auto-compact threshold
-The compact percentage shown is relative to the auto-compact trigger, NOT the raw context window.
-Claude Code computes: `threshold = contextWindow - min(maxOutputTokens, 20000) - 13000`.
+The percentage shown is relative to whichever limit binds first: the 400K retrieval quality ceiling (red threshold) or the auto-compact trigger — `min(compact_threshold, 400000)`.
+Claude Code computes auto-compact threshold: `contextWindow - min(maxOutputTokens, 20000) - 13000`.
 We approximate as `ctx_max - 33000` (configurable via `COMPACT_OVERHEAD` env var).
+On a 200K window, compaction (~167K) is the binding constraint. On a 1M window, the 400K quality ceiling binds.
 
 To re-derive if values change, search the binary:
 ```sh
