@@ -123,6 +123,12 @@ reset_state
 out=$(run 1000 5000 100000 200 200000)
 assert_contains "ctx_tokens sums all input components" "$out" "106k"
 
+# 3-digit k value with non-zero minor: 100 + 500 + 201500 = 202100 = 202k (not 202.1k)
+reset_state
+out=$(run 100 500 201500 200 1000000)
+assert_contains "3-digit k drops decimal" "$out" "202k"
+assert_not_contains "3-digit k no decimal shown" "$out" "202.1k"
+
 echo ""
 echo "=== Compact threshold ==="
 

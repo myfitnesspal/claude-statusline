@@ -50,6 +50,6 @@ echo "$input" | jq . > /tmp/claude-statusline-debug.json
 - No labels — use position and color to convey meaning
 - Hide fields when they're not actionable (e.g. cache age when warm)
 - Model abbreviated: Opus->O, Sonnet->S, Haiku->H
-- Token formatting drops trailing `.0` (200k not 200.0k)
+- Token formatting drops trailing `.0` (200k not 200.0k) and decimals at 3+ digits (202k not 202.1k)
 - Bash parameter expansion preferred over sed/awk forks
 - Run tests with `bash test-statusline.sh`

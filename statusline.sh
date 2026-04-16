@@ -67,7 +67,7 @@ fmt_tokens() {
 		else printf '%s.%sM' "$major" "$minor"; fi
 	elif [ "$n" -ge 1000 ]; then
 		local major=$((n / 1000)) minor=$(( (n % 1000) / 100 ))
-		if [ "$minor" -eq 0 ]; then printf '%sk' "$major"
+		if [ "$minor" -eq 0 ] || [ "$major" -ge 100 ]; then printf '%sk' "$major"
 		else printf '%s.%sk' "$major" "$minor"; fi
 	else
 		printf '%s' "$n"
