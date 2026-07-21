@@ -161,6 +161,26 @@ fmt_limit() {
 	printf '%b%s %s%%%b' "$color" "$label" "$pct" "$NORMAL"
 }
 
+# Auth mode: K = ANTHROPIC_API_KEY in env (API-key billing), E = Enterprise
+# claude.ai login, A = any other OAuth login (Anthropic Console / API billing).
+# Hidden when logged out with no key. The env var wins because Claude Code
+# prefers an approved ANTHROPIC_API_KEY over the stored OAuth login.
+# CLAUDE_JSON_PATH overrides the credential file location (tests).
+auth_letter=""
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+	auth_letter="K"
+else
+	claude_json="${CLAUDE_JSON_PATH:-$HOME/.claude.json}"
+	if [ -f "$claude_json" ]; then
+		org_type=$(jq -r 'if .oauthAccount then (.oauthAccount.organizationType // "unknown") else "" end' "$claude_json" 2>/dev/null)
+		if [ "$org_type" = "claude_enterprise" ]; then
+			auth_letter="E"
+		elif [ -n "$org_type" ]; then
+			auth_letter="A"
+		fi
+	fi
+fi
+
 # Shorten model name, append context size (e.g. "Opus 4.6 (1M context)" -> "O4.6·1M")
 short_model="${model%% (*}"
 short_model="${short_model/Opus /O}"
@@ -215,6 +235,7 @@ elif [ "$cache_age" -ge 180 ]; then
 fi
 
 parts="${NORMAL}${short_model}"
+[ -n "$auth_letter" ] && parts="${parts} ${auth_letter}"
 [ -n "$location" ] && parts="${parts} ${location}"
 [ -n "$sa_status" ] && parts="${parts} ${sa_status}${NORMAL}"
 parts="${parts} |"

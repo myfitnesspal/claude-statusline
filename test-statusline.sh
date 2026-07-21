@@ -10,14 +10,26 @@ STATUSLINE="$SCRIPT_DIR/statusline.sh"
 # Ensure env vars don't leak into tests
 unset CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
 unset COMPACT_OVERHEAD
+unset ANTHROPIC_API_KEY
 PASS=0
 FAIL=0
 SESSION="test-$$"
+
+# Auth fixtures: statusline reads oauthAccount from CLAUDE_JSON_PATH.
+# Default all tests to a logged-out fixture so the developer's real
+# ~/.claude.json doesn't leak into assertions.
+AUTH_JSON_DIR="/tmp/claude-statusline-authtest-$$"
+mkdir -p "$AUTH_JSON_DIR"
+echo '{}' > "$AUTH_JSON_DIR/logged-out.json"
+echo '{"oauthAccount":{"organizationType":"claude_enterprise"}}' > "$AUTH_JSON_DIR/enterprise.json"
+echo '{"oauthAccount":{"organizationType":"console"}}' > "$AUTH_JSON_DIR/console.json"
+export CLAUDE_JSON_PATH="$AUTH_JSON_DIR/logged-out.json"
 
 # Clean up state files on exit
 cleanup() {
 	rm -f "/tmp/claude-statusline-${SESSION}"
 	rm -f "/tmp/claude-statusline-newround-${SESSION}"
+	rm -rf "$AUTH_JSON_DIR"
 }
 trap cleanup EXIT
 
@@ -368,6 +380,36 @@ out=$(run 100 500 10000 200 200000 1.50)
 # Should reset to defaults: round_start_cost=$cost (1.50), msg_count=0
 assert_contains "v1 state: round cost resets" "$out" "+\$0.00"
 assert_not_contains "v1 state: no msg shown" "$out" "msg"
+
+echo ""
+echo "=== Auth mode indicator ==="
+
+# ANTHROPIC_API_KEY set: K shown after model, regardless of login state
+reset_state
+out=$(ANTHROPIC_API_KEY="sk-ant-test" CLAUDE_JSON_PATH="$AUTH_JSON_DIR/enterprise.json" run 100 500 10000 200 200000)
+assert_contains "API key session shows K" "$out" "200k K "
+
+# Enterprise claude.ai login: E
+reset_state
+out=$(CLAUDE_JSON_PATH="$AUTH_JSON_DIR/enterprise.json" run 100 500 10000 200 200000)
+assert_contains "Enterprise login shows E" "$out" "200k E "
+
+# Non-enterprise (Console/API) login: A
+reset_state
+out=$(CLAUDE_JSON_PATH="$AUTH_JSON_DIR/console.json" run 100 500 10000 200 200000)
+assert_contains "Console login shows A" "$out" "200k A "
+
+# Logged out, no key: indicator hidden
+reset_state
+out=$(run 100 500 10000 200 200000)
+assert_not_contains "logged out hides E" "$out" "200k E "
+assert_not_contains "logged out hides A" "$out" "200k A "
+assert_not_contains "logged out hides K" "$out" "200k K "
+
+# Same gray as the rest of section 1: no color escape between model and letter
+reset_state
+raw=$(CLAUDE_JSON_PATH="$AUTH_JSON_DIR/enterprise.json" run_raw 100 500 10000 200 200000)
+assert_contains "auth letter uncolored" "$raw" "200k E "
 
 echo ""
 echo "=== Results ==="

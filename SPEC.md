@@ -19,10 +19,11 @@ O4.6 200k | 34k 17% · 12msg · 7m | 2h14m 11% · 3d5h 12% | 19m +$0.05 $0.67
 ## Sections
 
 ### Section 1: Model identity
-`O4.6 200k [location] [sa:status]`
+`O4.6 200k [auth] [location] [sa:status]`
 
 - Model name abbreviated: Opus->O, Sonnet->S, Haiku->H
 - Context window size appended (e.g. 200k, 1M) — detected from JSON `context_window.context_window_size`
+- Auth mode as a single uncolored letter: `K` = `ANTHROPIC_API_KEY` in the process env (API-key billing), `E` = Enterprise claude.ai login (`oauthAccount.organizationType == "claude_enterprise"` in `~/.claude.json`), `A` = any other OAuth login (Anthropic Console / API billing). Hidden when logged out with no key. The env var wins because Claude Code prefers an approved `ANTHROPIC_API_KEY` over the stored OAuth login; a session where the key is present but was declined at the approval prompt shows `K` anyway (accepted inaccuracy — the payload carries no auth field). `CLAUDE_JSON_PATH` overrides the credential file location for tests.
 - Location shown only when cwd differs from project root, or agent/worktree active
 - Subagent governance status shown only when subagent hooks are installed
 
