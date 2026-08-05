@@ -107,9 +107,13 @@ echo "2|${round_start_cost}|${msg_count}|${now}" > "$STATE_FILE"
 # Usage snapshot for programmatic reads (agent self-throttling). Authoritative rate-limit
 # fields come straight from Claude Code's statusline input; persisted here each render so a
 # Bash poll can read live 5h/7d usage % + reset times. Written to a stable, session-scoped path.
-printf '{"five_hour_pct":%s,"five_hour_reset":"%s","seven_day_pct":%s,"seven_day_reset":"%s","cost_usd":%s,"ctx_tokens":%s,"ts":%s}\n' \
-	"${limit_5h:-null}" "${limit_5h_reset}" "${limit_7d:-null}" "${limit_7d_reset}" "${cost:-0}" "${ctx_tokens:-0}" "${now}" \
-	> "/tmp/claude-usage-${session_id}.json" 2>/dev/null
+# Also APPENDED (tagged with session_id) to a persistent history so account-wide cost can be
+# reconstructed across concurrent sessions = Sum of each session's latest cost -> a
+# contamination-free budget fit (see fit-budget.py). cost_usd is PER-SESSION; the % are account-wide.
+usage_json=$(printf '{"five_hour_pct":%s,"five_hour_reset":"%s","seven_day_pct":%s,"seven_day_reset":"%s","cost_usd":%s,"ctx_tokens":%s,"ts":%s,"session_id":"%s"}' \
+	"${limit_5h:-null}" "${limit_5h_reset}" "${limit_7d:-null}" "${limit_7d_reset}" "${cost:-0}" "${ctx_tokens:-0}" "${now}" "${session_id}")
+printf '%s\n' "$usage_json" > "/tmp/claude-usage-${session_id}.json" 2>/dev/null
+printf '%s\n' "$usage_json" >> "$HOME/.claude-statusline/usage-history.jsonl" 2>/dev/null
 
 # Color for total context: absolute token thresholds (retrieval quality)
 usable_cap=$((compact_threshold < 400000 ? compact_threshold : 400000))
