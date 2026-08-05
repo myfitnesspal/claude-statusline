@@ -188,33 +188,38 @@ else
 	fi
 fi
 
-# 7d wall countdown, appended to the 7d limit. Extrapolates the average burn rate
-# since the window opened and shows the TIME until used% would hit 100% — but ONLY
-# when that wall lands BEFORE the window resets. "!1d6h" = at this pace you run out
-# in 1d6h; compare it to the reset countdown just left of it. Hidden when you're on
-# track to finish the window without walling (so it only appears when it matters).
-# Yellow if the wall is in the farther half of the time remaining, red if the nearer
-# half. Unit is plain time — no thresholds to memorize.
+# 7d pace index, appended to the 7d limit. Extrapolates the average burn rate since
+# the window opened out to reset: 1.0x = dead on track to use EXACTLY 100% of the 7d
+# cap right at reset. >1 = burning too fast, you wall before reset (1.5x = you're on
+# pace to want 150% of your week); <1 = you'll finish with budget to spare (0.7x =
+# only 70% used, room to go harder). One anchor (1.0), no math. Grey <=1.0, yellow to
+# 1.3, red above (or >=90% used). Hidden for the window's first ~8h (too little
+# elapsed to extrapolate).
 fmt_pace() {
 	local pct=$1
 	local reset_ts=$2
 	[ -z "$pct" ] && return
 	[ -z "$reset_ts" ] && return
 	[ "$pct" -le 0 ] && return
-	local now window remaining elapsed wall color
+	local now window remaining elapsed idx10 whole frac color
 	now=$(date +%s)
 	window=604800
 	remaining=$((reset_ts - now))
-	[ "$remaining" -le 0 ] && return
+	[ "$remaining" -lt 0 ] && remaining=0
 	[ "$remaining" -gt "$window" ] && remaining=$window
 	elapsed=$((window - remaining))
-	[ "$elapsed" -le 0 ] && return
-	# seconds until used% reaches 100 at the average rate since the window opened
-	wall=$(( (100 - pct) * elapsed / pct ))
-	[ "$wall" -ge "$remaining" ] && return       # finishes the window without walling -> no warning
-	color="$YELLOW"
-	[ "$wall" -lt $((remaining / 2)) ] && color="$RED"
-	printf '%b !%s%b' "$color" "$(fmt_duration "$wall")" "$NORMAL"
+	[ "$elapsed" -lt $((window / 20)) ] && return   # <~8.4h in: not enough to extrapolate
+	# pace index x10 = (used%/elapsed) / (100/window) x 10   -> 10 == exactly on track
+	idx10=$(( pct * window * 10 / (elapsed * 100) ))
+	whole=$((idx10 / 10))
+	frac=$((idx10 % 10))
+	color="$NORMAL"
+	if [ "$pct" -ge 90 ] || [ "$idx10" -gt 13 ]; then
+		color="$RED"
+	elif [ "$idx10" -gt 10 ]; then
+		color="$YELLOW"
+	fi
+	printf '%b %d.%dx%b' "$color" "$whole" "$frac" "$NORMAL"
 }
 
 # Shorten model name, append context size (e.g. "Opus 4.6 (1M context)" -> "O4.6·1M")
