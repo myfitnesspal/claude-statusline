@@ -188,33 +188,33 @@ else
 	fi
 fi
 
-# 7d burn-pace gauge, appended to the 7d limit. Compares used% against the even
-# "spend it all exactly at reset" line (= elapsed fraction of the 7d window):
-#   on_pace% = 100 * (elapsed / 604800);  delta = used% - on_pace%
-# ^N = N points AHEAD of pace (at this burn you hit the cap before reset);
-# vN = N points of runway to spare. Grey on/behind pace, yellow >5 ahead,
-# red >15 ahead or >=90% used.
+# 7d wall countdown, appended to the 7d limit. Extrapolates the average burn rate
+# since the window opened and shows the TIME until used% would hit 100% — but ONLY
+# when that wall lands BEFORE the window resets. "!1d6h" = at this pace you run out
+# in 1d6h; compare it to the reset countdown just left of it. Hidden when you're on
+# track to finish the window without walling (so it only appears when it matters).
+# Yellow if the wall is in the farther half of the time remaining, red if the nearer
+# half. Unit is plain time — no thresholds to memorize.
 fmt_pace() {
 	local pct=$1
 	local reset_ts=$2
 	[ -z "$pct" ] && return
 	[ -z "$reset_ts" ] && return
-	local now window remaining on_pace delta color arrow mag
+	[ "$pct" -le 0 ] && return
+	local now window remaining elapsed wall color
 	now=$(date +%s)
 	window=604800
 	remaining=$((reset_ts - now))
-	[ "$remaining" -lt 0 ] && remaining=0
+	[ "$remaining" -le 0 ] && return
 	[ "$remaining" -gt "$window" ] && remaining=$window
-	on_pace=$(( (window - remaining) * 100 / window ))
-	delta=$((pct - on_pace))
-	if [ "$delta" -ge 0 ]; then arrow="^"; mag=$delta; else arrow="v"; mag=$((-delta)); fi
-	color="$NORMAL"
-	if [ "$pct" -ge 90 ] || [ "$delta" -gt 15 ]; then
-		color="$RED"
-	elif [ "$delta" -gt 5 ]; then
-		color="$YELLOW"
-	fi
-	printf '%b%s%s%b' "$color" "$arrow" "$mag" "$NORMAL"
+	elapsed=$((window - remaining))
+	[ "$elapsed" -le 0 ] && return
+	# seconds until used% reaches 100 at the average rate since the window opened
+	wall=$(( (100 - pct) * elapsed / pct ))
+	[ "$wall" -ge "$remaining" ] && return       # finishes the window without walling -> no warning
+	color="$YELLOW"
+	[ "$wall" -lt $((remaining / 2)) ] && color="$RED"
+	printf '%b !%s%b' "$color" "$(fmt_duration "$wall")" "$NORMAL"
 }
 
 # Shorten model name, append context size (e.g. "Opus 4.6 (1M context)" -> "O4.6·1M")
