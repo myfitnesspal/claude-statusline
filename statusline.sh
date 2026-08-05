@@ -188,38 +188,47 @@ else
 	fi
 fi
 
-# 7d pace index, appended to the 7d limit. Extrapolates the average burn rate since
-# the window opened out to reset: 1.0x = dead on track to use EXACTLY 100% of the 7d
-# cap right at reset. >1 = burning too fast, you wall before reset (1.5x = you're on
-# pace to want 150% of your week); <1 = you'll finish with budget to spare (0.7x =
-# only 70% used, room to go harder). One anchor (1.0), no math. Grey <=1.0, yellow to
-# 1.3, red above (or >=90% used). Hidden for the window's first ~8h (too little
-# elapsed to extrapolate).
+# 7d throttle meter, appended to the 7d limit — a bounded heat bar. EMPTY = your
+# current average burn still reaches reset (sustainable, all good); it FILLS as you'd
+# wall earlier; FULL = walling now. Ease off (or get 5h-blocked) and it drains as the
+# clock catches up to your usage. Non-linear by design (heat = 100 - runway, and
+# runway = time-to-wall / time-left is hyperbolic): near-empty while you have days of
+# runway, climbing fast only as the wall approaches. Grey when cool, yellow warming,
+# red when >half full or >=90% used. Hidden the window's first ~8h.
 fmt_pace() {
 	local pct=$1
 	local reset_ts=$2
 	[ -z "$pct" ] && return
 	[ -z "$reset_ts" ] && return
 	[ "$pct" -le 0 ] && return
-	local now window remaining elapsed idx10 whole frac color
+	local now window remaining elapsed wall runway heat cells filled i bar color
 	now=$(date +%s)
 	window=604800
 	remaining=$((reset_ts - now))
-	[ "$remaining" -lt 0 ] && remaining=0
+	[ "$remaining" -le 0 ] && return
 	[ "$remaining" -gt "$window" ] && remaining=$window
 	elapsed=$((window - remaining))
 	[ "$elapsed" -lt $((window / 20)) ] && return   # <~8.4h in: not enough to extrapolate
-	# pace index x10 = (used%/elapsed) / (100/window) x 10   -> 10 == exactly on track
-	idx10=$(( pct * window * 10 / (elapsed * 100) ))
-	whole=$((idx10 / 10))
-	frac=$((idx10 % 10))
+	wall=$(( (100 - pct) * elapsed / pct ))          # secs until used%=100 at avg rate
+	runway=$(( 100 * wall / remaining ))
+	[ "$runway" -gt 100 ] && runway=100
+	heat=$((100 - runway))
+	cells=5
+	filled=$(( (heat * cells + 50) / 100 ))
+	[ "$filled" -gt "$cells" ] && filled=$cells
+	bar=""
+	i=0
+	while [ "$i" -lt "$cells" ]; do
+		if [ "$i" -lt "$filled" ]; then bar="${bar}█"; else bar="${bar}░"; fi
+		i=$((i + 1))
+	done
 	color="$NORMAL"
-	if [ "$pct" -ge 90 ] || [ "$idx10" -gt 13 ]; then
+	if [ "$pct" -ge 90 ] || [ "$heat" -gt 50 ]; then
 		color="$RED"
-	elif [ "$idx10" -gt 10 ]; then
+	elif [ "$heat" -gt 0 ]; then
 		color="$YELLOW"
 	fi
-	printf '%b %d.%dx%b' "$color" "$whole" "$frac" "$NORMAL"
+	printf '%b %s%b' "$color" "$bar" "$NORMAL"
 }
 
 # Shorten model name, append context size (e.g. "Opus 4.6 (1M context)" -> "O4.6·1M")
