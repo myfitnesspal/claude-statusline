@@ -188,6 +188,35 @@ else
 	fi
 fi
 
+# 7d burn-pace gauge, appended to the 7d limit. Compares used% against the even
+# "spend it all exactly at reset" line (= elapsed fraction of the 7d window):
+#   on_pace% = 100 * (elapsed / 604800);  delta = used% - on_pace%
+# ^N = N points AHEAD of pace (at this burn you hit the cap before reset);
+# vN = N points of runway to spare. Grey on/behind pace, yellow >5 ahead,
+# red >15 ahead or >=90% used.
+fmt_pace() {
+	local pct=$1
+	local reset_ts=$2
+	[ -z "$pct" ] && return
+	[ -z "$reset_ts" ] && return
+	local now window remaining on_pace delta color arrow mag
+	now=$(date +%s)
+	window=604800
+	remaining=$((reset_ts - now))
+	[ "$remaining" -lt 0 ] && remaining=0
+	[ "$remaining" -gt "$window" ] && remaining=$window
+	on_pace=$(( (window - remaining) * 100 / window ))
+	delta=$((pct - on_pace))
+	if [ "$delta" -ge 0 ]; then arrow="^"; mag=$delta; else arrow="v"; mag=$((-delta)); fi
+	color="$NORMAL"
+	if [ "$pct" -ge 90 ] || [ "$delta" -gt 15 ]; then
+		color="$RED"
+	elif [ "$delta" -gt 5 ]; then
+		color="$YELLOW"
+	fi
+	printf '%b%s%s%b' "$color" "$arrow" "$mag" "$NORMAL"
+}
+
 # Shorten model name, append context size (e.g. "Opus 4.6 (1M context)" -> "O4.6·1M")
 short_model="${model%% (*}"
 short_model="${short_model/Opus /O}"
@@ -253,7 +282,7 @@ cost_fmt=$(printf '%s +$%s $%.2f' "$(fmt_duration "$api_secs")" "$round_cost" "$
 limit_parts=""
 if [ -n "$limit_5h" ]; then
 	limit_parts="$(fmt_limit "$limit_5h" "$limit_5h_reset")"
-	[ -n "$limit_7d" ] && limit_parts="${limit_parts} · $(fmt_limit "$limit_7d" "$limit_7d_reset")"
+	[ -n "$limit_7d" ] && limit_parts="${limit_parts} · $(fmt_limit "$limit_7d" "$limit_7d_reset")$(fmt_pace "$limit_7d" "$limit_7d_reset")"
 	parts="${parts} | ${limit_parts}"
 fi
 parts="${parts} | ${cost_fmt}${RESET}"
