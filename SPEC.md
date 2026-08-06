@@ -40,6 +40,7 @@ O4.6 200k | 34k 17% · 12msg · 7m | 2h14m 11% · 3d5h 12% | 19m +$0.05 $0.67
 - Dot separator between the two limits
 - Color-coded: green < 50%, yellow 50-79%, red >= 80%
 - Only shown when rate limit data is available (Pro/Max subscribers)
+- The 7-day limit is followed by a **bidirectional pace meter** (see below): it flags both burning too fast (you'll wall before the window/horizon) and too slow (you'll leave weekly budget unused, which is lost at reset). Empty = on pace.
 
 ### Section 4: Cost and timing
 `19m +$0.05 $0.67`
@@ -56,7 +57,7 @@ The compact percentage tells you when auto-compact fires, but says nothing about
 ### Context usage shown as a bar
 The usage percentage is drawn as a fixed-width bar rather than a number. A number invites arithmetic ("42% of what?"); a bar shows headroom at a glance. The bar scales to `usable_cap = min(compact_threshold, 400000)` so a full bar always means "at the wall that binds first" — the 400K retrieval red line on a large window, or the auto-compact threshold on a small one. Color is decoupled from length (absolute token thresholds), so the two degradation signals — retrieval quality and proximity to the ceiling — read independently.
 
-Overflow is marked with a `▶` arrowhead **fused** to the bar (no space), so the bar reads as continuing off-scale; the box keeps its `CTX_BAR_WIDTH` blocks and the arrowhead adds one cell. It is gated on the **red retrieval zone** (>= 400K), not merely on passing the bar ceiling: on a large window the ceiling *is* 400K so overflow is inherently red; on a small window the ceiling is the auto-compact threshold (below 400K), and passing it is a routine, self-healing state that doesn't warrant an alarm glyph — the full bar alone signals it. Reserving the marker for the red line keeps it meaning one thing: irreversible retrieval degradation. Bar cells are set by `CTX_BAR_WIDTH` (default 8); the 7d throttle meter has its own `PACE_BAR_WIDTH` (default 8) so the two bars can be tuned independently or matched.
+Overflow is marked with a `▶` arrowhead **fused** to the bar (no space), so the bar reads as continuing off-scale; the box keeps its `CTX_BAR_WIDTH` blocks and the arrowhead adds one cell. It is gated on the **red retrieval zone** (>= 400K), not merely on passing the bar ceiling: on a large window the ceiling *is* 400K so overflow is inherently red; on a small window the ceiling is the auto-compact threshold (below 400K), and passing it is a routine, self-healing state that doesn't warrant an alarm glyph — the full bar alone signals it. Reserving the marker for the red line keeps it meaning one thing: irreversible retrieval degradation. Bar cells are set by `CTX_BAR_WIDTH` (default 8); the 7d pace meter has its own `PACE_BAR_WIDTH` (default 8) so the two bars can be tuned independently or matched.
 
 ### Message count removed
 An earlier version showed a colored user-message count as a second degradation axis (multi-turn reliability decay). It was dropped: the number wasn't actionable in practice — token volume already carries the "how loaded is this session" signal, and message count added a competing indicator without changing what the user does about it. The per-round cost reset still keys off the same `UserPromptSubmit` marker; only the display and its state field were removed.
@@ -154,14 +155,32 @@ Approximated as `ctx_max - 33000`. Override with `COMPACT_OVERHEAD` env var.
 | `COMPACT_OVERHEAD` | 33000 | Tokens subtracted from the window to approximate the auto-compact threshold. |
 | `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | unset | If set (e.g. 75), treats the auto-compact threshold as that percent of the window; wins over `COMPACT_OVERHEAD`. |
 | `CTX_BAR_WIDTH` | 8 | Cells in the context usage bar. |
-| `PACE_BAR_WIDTH` | 8 | Cells in the 7d throttle meter. |
-| `PACE_WORK` | unset | Your weekly work schedule (`"<days> <start>-<end>"` local 24h, e.g. `"Mon-Fri 09-18"`; days a range like `Mon-Fri` or a comma list like `Mon,Wed,Fri`; hours `HH` or `HH:MM`). The 7d pace meter judges "will I run dry in time?" against your work schedule instead of the reset (see below). Unset = judge to the reset. |
+| `PACE_BAR_WIDTH` | 8 | Cells in the 7d pace meter. |
+| `PACE_TOL` | 10 | On-pace tolerance: projected utilization within ±this of 100% shows an empty (neutral) meter. |
+| `PACE_SPAN` | 50 | Deviation beyond the tolerance band that fills the meter fully; full deflection is at `\|projected-100\| = PACE_TOL + PACE_SPAN`. |
+| `PACE_WORK` | unset | Your weekly work schedule (`"<days> <start>-<end>"` local 24h, e.g. `"Mon-Fri 09-18"`; days a range like `Mon-Fri` or a comma list like `Mon,Wed,Fri`; hours `HH` or `HH:MM`). The 7d pace meter judges pace against your work schedule instead of the reset (see below). Unset = judge to the reset. |
 | `PACE_HORIZON_TS` | unset | Absolute-epoch override of the computed horizon (advanced / tests). Takes precedence over `PACE_WORK`. |
 | `CLAUDE_JSON_PATH` | `~/.claude.json` | Credential file the auth/plan letter reads (tests point it at fixtures). |
 
+### 7d pace meter (bidirectional)
+
+The 7d pace meter is a bidirectional throttle around one target: **use ~100% of the weekly budget by the horizon, without walling first.** Unused 7-day allowance is lost at reset, so both directions are failures worth flagging.
+
+It shows the signed deviation of *projected end-of-horizon utilization* from 100%:
+
+```
+projected = used% * (elapsed + time-to-horizon) / elapsed
+```
+
+- **On pace** (`|projected-100| <= PACE_TOL`): empty, neutral grey.
+- **Too hot** (`projected > 100`, you'd hit the cap before the horizon): fills from the **left**, escalating **yellow → orange → red** with magnitude. A full red bar means back off hard; there is no overflow marker (being further over doesn't change the action).
+- **Too cold** (`projected < 100`, you'd reach the horizon with budget unused): fills from the **right** in **blue**. It never escalates — leaving budget on the table is a milder, cliff-free cost, so the color stays calm while the fill shows how much.
+
+Fill magnitude is `(|projected-100| - PACE_TOL)` scaled so `PACE_SPAN` beyond the band is a full bar. There is deliberately **no "used >= 90% → red" rule**: the projection subsumes it — 95% used mid-window projects far over 100 (hot), while 95% used near the reset projects ~95 (on pace, you used it well), which the old rule would have wrongly alarmed.
+
 ### 7d pace work schedule
 
-The 7d throttle meter asks "at my current average burn, do I run dry before I stop needing the budget?" By default that horizon is the account reset. But a work account only needs to last through the work week — off-hours before the reset are free time you won't spend, so judging pace all the way to a Sunday reset over-penalizes a Mon–Fri user.
+The horizon in that projection is, by default, the account reset. But a work account only needs to last through the work week — off-hours before the reset are free time you won't spend, so judging pace all the way to a Sunday reset over-penalizes a Mon–Fri user.
 
 `PACE_WORK` sets the horizon to **the last work-active instant at or before the reset** (computed by `pace_horizon`). The burn *rate* is still measured over the real elapsed window; only the "do I make it in time?" comparison uses this horizon. Concretely:
 

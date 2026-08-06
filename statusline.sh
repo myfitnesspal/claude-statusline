@@ -52,14 +52,20 @@ GREEN='\033[32m'
 YELLOW='\033[33m'
 ORANGE='\033[38;5;208m'
 RED='\033[31m'
+COLD='\033[38;5;33m'   # under-pace (cool blue, legible on light and dark)
 NORMAL='\033[38;5;245m'
 RESET='\033[0m'
 
 # Bar widths, in cells. Two bars use them: the context usage bar and the 7d
-# throttle meter. Independent knobs (env-overridable) so either can be tuned
+# pace meter. Independent knobs (env-overridable) so either can be tuned
 # alone; set them equal for a matched look.
 CTX_BAR_WIDTH="${CTX_BAR_WIDTH:-8}"
 PACE_BAR_WIDTH="${PACE_BAR_WIDTH:-8}"
+# 7d pace meter tuning: PACE_TOL is the on-pace tolerance band (± projected %,
+# grey/empty inside it); PACE_SPAN is the deviation beyond the band that fills the
+# meter fully. So full deflection is at |projected-100| = PACE_TOL + PACE_SPAN.
+PACE_TOL="${PACE_TOL:-10}"
+PACE_SPAN="${PACE_SPAN:-50}"
 
 # Build a bar string: `filled` solid cells (█) out of `width`, the rest empty (░).
 bar_of() {
@@ -302,13 +308,19 @@ pace_horizon() {
 	return 1
 }
 
-# 7d throttle meter, appended to the 7d limit — a bounded heat bar. EMPTY = your
-# current average burn still reaches the horizon (sustainable, all good); it FILLS as
-# you'd wall earlier; FULL = walling now. Ease off (or get 5h-blocked) and it drains
-# as the clock catches up to your usage. Non-linear by design (heat = 100 - runway,
-# and runway = time-to-wall / time-left is hyperbolic): near-empty while you have days
-# of runway, climbing fast only as the wall approaches. Grey when cool, yellow
-# warming, red when >half full or >=90% used. Hidden the window's first ~8h.
+# 7d pace meter, appended to the 7d limit — a bidirectional throttle around "on
+# pace to use ~100% of the weekly budget by the horizon." It shows the SIGNED
+# deviation of projected end-of-horizon utilization from that target:
+#   projected = used% * (elapsed + time-to-horizon) / elapsed
+# EMPTY/grey = on pace (within PACE_TOL). TOO HOT (projected > 100, you'd wall
+# before the horizon) fills from the LEFT and escalates yellow -> orange -> red.
+# TOO COLD (projected < 100, you'd reach the horizon with budget unused — lost at
+# reset) fills from the RIGHT in blue; it never escalates, because leaving budget on
+# the table is a milder, cliff-free cost. Fill magnitude = how far off pace. No
+# overflow marker (a full hot bar already means "back off hard"). Hidden the first
+# ~8h. Note there is deliberately no "used >= 90% -> red" rule: the projection
+# already handles it — 95% used mid-window projects far over 100 (hot), while 95%
+# used near the reset projects ~95 (on pace, you used it well).
 #
 # The horizon is the reset by default. Set PACE_WORK ("<days> <start>-<end>" local,
 # e.g. "Mon-Fri 09-18") to judge pace against your work schedule instead: the burn
@@ -324,7 +336,7 @@ fmt_pace() {
 	[ -z "$pct" ] && return
 	[ -z "$reset_ts" ] && return
 	[ "$pct" -le 0 ] && return
-	local now window remaining_reset elapsed horizon h remaining wall runway heat cells filled bar color
+	local now window remaining_reset elapsed horizon h remaining projected dev ad mag w cells color
 	now=$(date +%s)
 	window=604800
 	remaining_reset=$((reset_ts - now))
@@ -346,21 +358,25 @@ fmt_pace() {
 	remaining=$((horizon - now))
 	[ "$remaining" -le 0 ] && return
 
-	wall=$(( (100 - pct) * elapsed / pct ))          # secs until used%=100 at avg rate
-	runway=$(( 100 * wall / remaining ))
-	[ "$runway" -gt 100 ] && runway=100
-	heat=$((100 - runway))
-	cells=$PACE_BAR_WIDTH
-	filled=$(( (heat * cells + 50) / 100 ))
-	[ "$filled" -gt "$cells" ] && filled=$cells
-	bar=$(bar_of "$filled" "$cells")
-	color="$NORMAL"
-	if [ "$pct" -ge 90 ] || [ "$heat" -gt 50 ]; then
-		color="$RED"
-	elif [ "$heat" -gt 0 ]; then
-		color="$YELLOW"
+	# Projected end-of-horizon utilization, and its signed deviation from 100%.
+	w=$PACE_BAR_WIDTH
+	projected=$(( pct * (elapsed + remaining) / elapsed ))
+	dev=$(( projected - 100 ))
+	ad=$dev; [ "$ad" -lt 0 ] && ad=$(( -ad ))
+	mag=$(( ad - PACE_TOL )); [ "$mag" -lt 0 ] && mag=0
+	cells=$(( (mag * w + PACE_SPAN / 2) / PACE_SPAN )); [ "$cells" -gt "$w" ] && cells=$w
+
+	if [ "$cells" -eq 0 ]; then
+		# On pace (within tolerance): neutral, empty.
+		printf ' %b%b' "${NORMAL}$(bar_of 0 "$w")" "$NORMAL"
+	elif [ "$dev" -gt 0 ]; then
+		# Too hot: fills from the left, yellow -> orange -> red by magnitude.
+		color="$YELLOW"; [ "$cells" -ge 3 ] && color="$ORANGE"; [ "$cells" -ge 6 ] && color="$RED"
+		printf ' %b%b' "${color}$(bar_of "$cells" "$cells")${NORMAL}$(bar_of 0 $(( w - cells )))" "$NORMAL"
+	else
+		# Too cold: fills from the right, blue (never escalates).
+		printf ' %b%b' "${NORMAL}$(bar_of 0 $(( w - cells )))${COLD}$(bar_of "$cells" "$cells")" "$NORMAL"
 	fi
-	printf '%b %s%b' "$color" "$bar" "$NORMAL"
 }
 
 # Shorten model name, append context size (e.g. "Opus 4.6 (1M context)" -> "O4.6·1M")

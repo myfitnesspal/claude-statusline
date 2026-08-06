@@ -232,44 +232,75 @@ out=$(CTX_BAR_WIDTH=4 run 130000 0 0 0 1000000)
 assert_contains "CTX_BAR_WIDTH=4 yields a 4-cell bar" "$out" "█░░░"
 assert_not_contains "CTX_BAR_WIDTH=4 is not the default width" "$out" "██████████"
 
-# PACE_BAR_WIDTH changes the 7d throttle-meter length. Half-elapsed window at 50%
+# PACE_BAR_WIDTH changes the 7d pace-meter length. Half-elapsed window at 50%
 # used -> exactly on pace -> empty meter of the given width.
 reset_state
 out=$(pace_json 50 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
 assert_contains "PACE_BAR_WIDTH=8 yields an 8-cell meter" "$out" "░░░░░░░░"
 
 echo ""
-echo "=== 7d pace horizon (heat vs the effective horizon) ==="
+echo "=== 7d pace meter (bidirectional: projected utilization) ==="
 
-# Scenario: 7d window half-elapsed (302400s left), 70% used. At that average rate the
-# wall is 129600s out. Judged against the reset (302400s) that's ~heat 58 -> a red,
-# mostly-full meter. The effective horizon (from PACE_WORK; forced here with the
-# PACE_HORIZON_TS override) moves the "do I make it in time" comparison earlier.
+# Window half-elapsed (302400s left, elapsed 302400), so projected = 2 * used%.
+# Target is 100% by the horizon; the meter shows the signed deviation.
+# HOT (projected > 100) fills from the LEFT, yellow -> orange -> red; COLD
+# (projected < 100) fills from the RIGHT in blue; on pace (|dev| <= 10) is empty.
+YEL=$'\033[33m'; ORG=$'\033[38;5;208m'; RD=$'\033[31m'; BLU=$'\033[38;5;33m'
 
-# No horizon override: judged to reset -> red 5-cell meter.
+# On pace: 50% used -> projected 100 -> empty neutral meter.
 reset_state
-raw=$(pace_json 70 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE")
-out=$(printf '%s' "$raw" | strip_ansi)
-assert_contains "no horizon: 5-cell meter" "$out" "70% █████░░░"
-assert_contains "no horizon: meter is red" "$raw" $'\033[31m █████░░░'
+out=$(pace_json 50 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+assert_contains "on pace: empty meter" "$out" "50% ░░░░░░░░"
 
-# Horizon sooner than the wall (120000s < 129600s): you finish before you'd wall
-# -> made it -> empty meter.
+# Hot, escalating by magnitude:
+reset_state   # 58% -> projected 116 -> 1 cell, yellow
+raw=$(pace_json 58 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE"); out=$(printf '%s' "$raw" | strip_ansi)
+assert_contains "mild hot: 1-cell from left" "$out" "58% █░░░░░░░"
+assert_contains "mild hot is yellow" "$raw" "${YEL}█"
+reset_state   # 65% -> projected 130 -> 3 cells, orange
+raw=$(pace_json 65 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE"); out=$(printf '%s' "$raw" | strip_ansi)
+assert_contains "moderate hot: 3-cell" "$out" "65% ███░░░░░"
+assert_contains "moderate hot is orange" "$raw" "${ORG}███"
+reset_state   # 75% -> projected 150 -> 6 cells, red
+raw=$(pace_json 75 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE"); out=$(printf '%s' "$raw" | strip_ansi)
+assert_contains "severe hot: 6-cell" "$out" "75% ██████░░"
+assert_contains "severe hot is red" "$raw" "${RD}██████"
+
+# Cold (leaving budget on the table): fills from the RIGHT in blue, never escalates.
+reset_state   # 30% -> projected 60 -> 5 cells cold
+raw=$(pace_json 30 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE"); out=$(printf '%s' "$raw" | strip_ansi)
+assert_contains "cold: fills from the right" "$out" "30% ░░░█████"
+assert_contains "cold is blue" "$raw" "${BLU}█████"
+reset_state   # 42% -> projected 84 -> 1 cell cold
+out=$(pace_json 42 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+assert_contains "mild cold: 1 cell on the right" "$out" "42% ░░░░░░░█"
+
+# No overflow marker even when very hot (clamps at full).
+reset_state   # 90% -> projected 180 -> full red, no marker
+out=$(pace_json 90 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+assert_contains "very hot: full bar" "$out" "90% ████████"
+assert_not_contains "very hot: no overflow marker" "$out" "▶"
+
+echo ""
+echo "=== 7d pace horizon shifts the target comparison ==="
+
+# The horizon (forced with PACE_HORIZON_TS) changes the time-to-horizon in the
+# projection. Baseline 70% used, half-elapsed -> projected 140 (5-cell orange).
+
+# A nearer horizon (200000s < the 302400s to reset) -> less time -> projected ~116
+# -> cooler (1-cell yellow).
+reset_state
+_now=$(date +%s)
+out=$(pace_json 70 302400 | PACE_HORIZON_TS=$((_now + 200000)) PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+assert_contains "nearer horizon eases the meter to 1 cell" "$out" "70% █░░░░░░░"
+
+# A horizon near enough that you'd only finish at ~97% -> on pace -> empty.
 reset_state
 _now=$(date +%s)
 out=$(pace_json 70 302400 | PACE_HORIZON_TS=$((_now + 120000)) PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
-assert_contains "horizon before wall: empty meter (made it)" "$out" "70% ░░░░░░░░"
+assert_contains "near horizon: made it -> empty" "$out" "70% ░░░░░░░░"
 
-# Horizon later than the wall but before reset (200000s): still exposed, but cooler
-# than judging to the full reset -> yellow 3-cell meter.
-reset_state
-_now=$(date +%s)
-raw=$(pace_json 70 302400 | PACE_HORIZON_TS=$((_now + 200000)) PACE_BAR_WIDTH=8 bash "$STATUSLINE")
-out=$(printf '%s' "$raw" | strip_ansi)
-assert_contains "horizon eases the meter: 3-cell" "$out" "70% ███░░░░░"
-assert_contains "eased meter is yellow" "$raw" $'\033[33m ███░░░░░'
-
-# Horizon already passed (coasting: last work moment is behind you) -> meter hidden.
+# Horizon already passed (coasting) -> meter hidden entirely.
 reset_state
 _now=$(date +%s)
 out=$(pace_json 70 302400 | PACE_HORIZON_TS=$((_now - 1000)) PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
@@ -280,7 +311,7 @@ assert_not_contains "coasting: no empty meter either" "$out" "70% ░"
 # Malformed PACE_WORK falls back to judging against the reset (no crash).
 reset_state
 out=$(pace_json 70 302400 | PACE_WORK="garbage" PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
-assert_contains "bad PACE_WORK falls back to reset" "$out" "70% █████░░░"
+assert_contains "bad PACE_WORK falls back to reset (5-cell)" "$out" "70% █████░░░"
 
 # A well-formed PACE_WORK renders without error (schedule actually parses).
 reset_state
