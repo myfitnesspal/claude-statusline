@@ -28,9 +28,9 @@ O4.6 200k | 34k 17% · 12msg · 7m | 2h14m 11% · 3d5h 12% | 19m +$0.05 $0.67
 - Subagent governance status shown only when subagent hooks are installed
 
 ### Section 2: Context health
-`34k 17% · 7m`
+`34k ██████░░░░ · 7m`
 
-- **Total context**: absolute token count colored by retrieval quality thresholds, plus usage percentage relative to whichever limit binds first: the 400K retrieval quality ceiling or the auto-compact threshold (whichever is smaller)
+- **Total context**: absolute token count colored by retrieval quality thresholds, followed by a **usage bar**. The bar fills to `usable_cap = min(compact_threshold, 400000)` — a full bar is that ceiling (the 400K retrieval red line, or the auto-compact threshold when it binds first). Past the ceiling the bar pegs full and gains a `▸` overflow marker. The bar inherits the token-count color (green < 120K, yellow 120-250K, orange 250-400K, red >= 400K), so on a small window a full/overflow bar can be non-red (the ceiling is the compact threshold, below 400K). Width is `CTX_BAR_WIDTH` cells (default 10).
 - **Cache age**: time since last API call, predicts whether prompt cache is warm. Hidden when < 3 minutes (cache warm). Shown yellow at 3-5 minutes (at risk), red > 5 minutes (cold, ~5 minute TTL expired).
 - Output tokens are NOT shown — they aren't in context yet (will fold in on next call)
 
@@ -52,7 +52,10 @@ O4.6 200k | 34k 17% · 12msg · 7m | 2h14m 11% · 3d5h 12% | 19m +$0.05 $0.67
 ## Key Design Decisions
 
 ### Context colored by absolute token thresholds, not compact percentage
-The compact percentage tells you when auto-compact fires, but says nothing about retrieval quality. Research (MRCR v2 benchmarks, practitioner needle tests) shows retrieval degrades at specific absolute token thresholds regardless of window size. A 200K session on a 1M window has the same retrieval quality as 200K on a 200K window. The compact percentage is still displayed as informational text.
+The compact percentage tells you when auto-compact fires, but says nothing about retrieval quality. Research (MRCR v2 benchmarks, practitioner needle tests) shows retrieval degrades at specific absolute token thresholds regardless of window size. A 200K session on a 1M window has the same retrieval quality as 200K on a 200K window. The usage is shown as a bar (see below); its color, keyed to absolute token count, carries the retrieval-quality signal while the bar length carries the how-close-to-the-ceiling signal.
+
+### Context usage shown as a bar
+The usage percentage is drawn as a fixed-width bar rather than a number. A number invites arithmetic ("42% of what?"); a bar shows headroom at a glance. The bar scales to `usable_cap = min(compact_threshold, 400000)` so a full bar always means "at the wall that binds first" — the 400K retrieval red line on a large window, or the auto-compact threshold on a small one. Overflow past the ceiling pegs the bar full and adds a `▸` marker so the over-limit state stays visible instead of saturating silently. Color is decoupled from length (absolute token thresholds), so the two degradation signals — retrieval quality and proximity to the ceiling — read independently. Bar cells are set by `CTX_BAR_WIDTH` (default 10); the 7d throttle meter has its own `PACE_BAR_WIDTH` (default 5) so the two bars can be tuned independently or matched.
 
 ### Message count removed
 An earlier version showed a colored user-message count as a second degradation axis (multi-turn reliability decay). It was dropped: the number wasn't actionable in practice — token volume already carries the "how loaded is this session" signal, and message count added a competing indicator without changing what the user does about it. The per-round cost reset still keys off the same `UserPromptSubmit` marker; only the display and its state field were removed.
@@ -149,3 +152,13 @@ threshold = contextWindow - min(maxOutputTokens, 20000) - 13000
 ```
 
 Approximated as `ctx_max - 33000`. Override with `COMPACT_OVERHEAD` env var.
+
+## Configuration (env vars)
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `COMPACT_OVERHEAD` | 33000 | Tokens subtracted from the window to approximate the auto-compact threshold. |
+| `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | unset | If set (e.g. 75), treats the auto-compact threshold as that percent of the window; wins over `COMPACT_OVERHEAD`. |
+| `CTX_BAR_WIDTH` | 10 | Cells in the context usage bar. |
+| `PACE_BAR_WIDTH` | 5 | Cells in the 7d throttle meter. |
+| `CLAUDE_JSON_PATH` | `~/.claude.json` | Credential file the auth/plan letter reads (tests point it at fixtures). |

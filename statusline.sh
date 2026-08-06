@@ -56,6 +56,22 @@ RED='\033[31m'
 NORMAL='\033[38;5;245m'
 RESET='\033[0m'
 
+# Bar widths, in cells. Two bars use them: the context usage bar and the 7d
+# throttle meter. Independent knobs (env-overridable) so either can be tuned
+# alone; set them equal for a matched look.
+CTX_BAR_WIDTH="${CTX_BAR_WIDTH:-10}"
+PACE_BAR_WIDTH="${PACE_BAR_WIDTH:-5}"
+
+# Build a bar string: `filled` solid cells (█) out of `width`, the rest empty (░).
+bar_of() {
+	local filled=$1 width=$2 out="" i=0
+	while [ "$i" -lt "$width" ]; do
+		if [ "$i" -lt "$filled" ]; then out="${out}█"; else out="${out}░"; fi
+		i=$((i + 1))
+	done
+	printf '%s' "$out"
+}
+
 # Human-friendly token formatting (1234 -> 1.2k, 200000 -> 200k, 1000000 -> 1M)
 fmt_tokens() {
 	local n=$1
@@ -137,6 +153,14 @@ elif [ "$ctx_tokens" -ge 120000 ]; then
 else
 	ctx_color="$GREEN"
 fi
+
+# Context usage bar: fill = ctx_tokens / usable_cap, so a full bar is the
+# min(compact_threshold, 400000) ceiling. Past the ceiling the bar pegs full and
+# gets a ▸ overflow marker. Fill inherits ctx_color (absolute token thresholds).
+ctx_filled=$(( (compact_pct * CTX_BAR_WIDTH + 50) / 100 ))
+[ "$ctx_filled" -gt "$CTX_BAR_WIDTH" ] && ctx_filled=$CTX_BAR_WIDTH
+ctx_bar=$(bar_of "$ctx_filled" "$CTX_BAR_WIDTH")
+[ "$ctx_tokens" -gt "$usable_cap" ] && ctx_bar="${ctx_bar}▸"
 
 # Format duration from seconds (e.g. 3661 -> "1h1m", 90 -> "1m", 86400 -> "1d")
 fmt_duration() {
@@ -220,7 +244,7 @@ fmt_pace() {
 	[ -z "$pct" ] && return
 	[ -z "$reset_ts" ] && return
 	[ "$pct" -le 0 ] && return
-	local now window remaining elapsed wall runway heat cells filled i bar color
+	local now window remaining elapsed wall runway heat cells filled bar color
 	now=$(date +%s)
 	window=604800
 	remaining=$((reset_ts - now))
@@ -232,15 +256,10 @@ fmt_pace() {
 	runway=$(( 100 * wall / remaining ))
 	[ "$runway" -gt 100 ] && runway=100
 	heat=$((100 - runway))
-	cells=5
+	cells=$PACE_BAR_WIDTH
 	filled=$(( (heat * cells + 50) / 100 ))
 	[ "$filled" -gt "$cells" ] && filled=$cells
-	bar=""
-	i=0
-	while [ "$i" -lt "$cells" ]; do
-		if [ "$i" -lt "$filled" ]; then bar="${bar}█"; else bar="${bar}░"; fi
-		i=$((i + 1))
-	done
+	bar=$(bar_of "$filled" "$cells")
 	color="$NORMAL"
 	if [ "$pct" -ge 90 ] || [ "$heat" -gt 50 ]; then
 		color="$RED"
@@ -293,7 +312,7 @@ parts="${NORMAL}${short_model}"
 [ -n "$location" ] && parts="${parts} ${location}"
 [ -n "$sa_status" ] && parts="${parts} ${sa_status}${NORMAL}"
 parts="${parts} |"
-parts="${parts} ${ctx_color}$(fmt_tokens "$ctx_tokens") ${compact_pct}%${NORMAL}${cache_part}"
+parts="${parts} ${ctx_color}$(fmt_tokens "$ctx_tokens") ${ctx_bar}${NORMAL}${cache_part}"
 api_secs=$((api_ms / 1000))
 round_cost=$(awk "BEGIN {printf \"%.2f\", $cost - $round_start_cost}")
 cost_fmt=$(printf '%s +$%s $%.2f' "$(fmt_duration "$api_secs")" "$round_cost" "$cost")

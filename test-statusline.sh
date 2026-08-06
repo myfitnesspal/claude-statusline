@@ -133,54 +133,90 @@ assert_contains "3-digit k drops decimal" "$out" "202k"
 assert_not_contains "3-digit k no decimal shown" "$out" "202.1k"
 
 echo ""
-echo "=== Compact threshold ==="
+echo "=== Context usage bar ==="
 
-# usable_cap = min(compact_threshold, 400000)
-# With 200K window: compact_threshold=167000, cap=167000
-# compact_pct = 10600 * 100 / 167000 = 6%
-reset_state
-out=$(run 100 500 10000 200 200000)
-assert_contains "compact_pct with 200K window" "$out" "6%"
+# The context percentage is rendered as a bar scaled to usable_cap =
+# min(compact_threshold, 400000). Full bar = the ceiling; past it the bar pegs
+# full and gets a ▸ overflow marker. Bars pinned to CTX_BAR_WIDTH=10 (one cell
+# per 10%) so expected strings are deterministic regardless of the default.
 
-# With 1M window: compact_threshold=967000, cap=400000
-# compact_pct = 10600 * 100 / 400000 = 2%
+# Bar replaces the numeric percentage.
+# 1M window: cap=400000. 130000/400000 = 32% -> 3 cells.
 reset_state
-out=$(run 100 500 10000 200 1000000)
-assert_contains "compact_pct with 1M window" "$out" "2%"
+out=$(CTX_BAR_WIDTH=10 run 130000 0 0 0 1000000)
+assert_contains "context renders a bar" "$out" "███░░░░░░░"
+assert_not_contains "percentage number removed" "$out" "32%"
 
-# Higher usage: 500 + 5000 + 160000 = 165500
-# 200K window: cap=167000, compact_pct = 165500 * 100 / 167000 = 99%
+# Denominator scales with window: same tokens, smaller window -> fuller bar.
+# 167000 tokens: 200K window cap=167000 -> 100% (full); 1M window cap=400000 -> 41%.
 reset_state
-out=$(run 500 5000 160000 200 200000)
-assert_contains "compact_pct near limit" "$out" "99%"
+out=$(CTX_BAR_WIDTH=10 run 167000 0 0 0 200000)
+assert_contains "200K window: full at compact threshold" "$out" "██████████"
+reset_state
+out=$(CTX_BAR_WIDTH=10 run 167000 0 0 0 1000000)
+assert_contains "1M window: same tokens, partial bar" "$out" "████░░░░░░"
+assert_not_contains "1M window: not full" "$out" "██████████"
+
+# Exactly at the ceiling: full bar, NO overflow marker.
+reset_state
+out=$(CTX_BAR_WIDTH=10 run 400000 0 0 0 1000000)
+assert_contains "at ceiling: full bar" "$out" "██████████"
+assert_not_contains "at ceiling: no marker" "$out" "▸"
+
+# Past the ceiling: pegged full with the ▸ marker.
+reset_state
+out=$(CTX_BAR_WIDTH=10 run 410000 0 0 0 1000000)
+assert_contains "past ceiling: full bar + marker" "$out" "██████████▸"
+
+# Small window: ceiling is the compact threshold (< 400K), so a full+marker bar
+# can be non-red. 180000 tokens on 200K: cap=167000 (over), color yellow (120-250K).
+reset_state
+raw=$(CTX_BAR_WIDTH=10 run_raw 180000 0 0 0 200000)
+assert_contains "small-window overflow is yellow" "$raw" $'\033[33m180k'
+assert_contains "small-window overflow pegs full+marker" "$raw" "██████████▸"
 
 echo ""
 echo "=== CLAUDE_AUTOCOMPACT_PCT_OVERRIDE ==="
 
-# With override=85, threshold = 200000 * 85 / 100 = 170000
-# ctx_tokens = 10600, compact_pct = 10600 * 100 / 170000 = 6%
+# Override shifts the denominator. 130000 tokens on 200K:
+#   default cap=167000 -> 77% (8 cells, no marker)
+#   override=50 -> cap=100000 -> over -> full+marker
 reset_state
-out=$(CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=85 run 100 500 10000 200 200000)
-assert_contains "override 85% with 200K window" "$out" "6%"
+out=$(CTX_BAR_WIDTH=10 run 130000 0 0 0 200000)
+assert_contains "default denominator: 8-cell bar" "$out" "████████░░"
+assert_not_contains "default denominator: no marker" "$out" "▸"
+reset_state
+out=$(CTX_BAR_WIDTH=10 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 run 130000 0 0 0 200000)
+assert_contains "override=50 shrinks denominator, overflows" "$out" "██████████▸"
 
-# With override=50, threshold = 200000 * 50 / 100 = 100000
-# ctx_tokens = 10600, compact_pct = 10600 * 100 / 100000 = 10%
+# COMPACT_OVERHEAD shifts the denominator too: overhead=100000 on 200K -> cap=100000.
 reset_state
-out=$(CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 run 100 500 10000 200 200000)
-assert_contains "override 50% shifts threshold" "$out" "10%"
+out=$(CTX_BAR_WIDTH=10 COMPACT_OVERHEAD=100000 run 130000 0 0 0 200000)
+assert_contains "COMPACT_OVERHEAD shrinks denominator, overflows" "$out" "██████████▸"
 
-# With override=97, threshold = 1000000 * 97 / 100 = 970000, cap=400000
-# ctx_tokens = 10600, compact_pct = 10600 * 100 / 400000 = 2%
+# Override beats COMPACT_OVERHEAD: override=50 (cap=100000) wins over overhead=0
+# (which would give cap=200000 -> 65%, a 7-cell bar).
 reset_state
-out=$(CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=97 run 100 500 10000 200 1000000)
-assert_contains "override 97% with 1M window" "$out" "2%"
+out=$(CTX_BAR_WIDTH=10 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 COMPACT_OVERHEAD=0 run 130000 0 0 0 200000)
+assert_contains "override beats COMPACT_OVERHEAD" "$out" "██████████▸"
+assert_not_contains "override beats COMPACT_OVERHEAD (not overhead's bar)" "$out" "███████░░░"
 
-# Override takes precedence over COMPACT_OVERHEAD
+echo ""
+echo "=== Bar width knobs ==="
+
+# CTX_BAR_WIDTH changes the context bar length. 32% at width 4 -> 1 cell.
 reset_state
-out=$(CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 COMPACT_OVERHEAD=1000 run 100 500 10000 200 200000)
-# threshold = 100000 (from override), NOT 199000 (from overhead)
-# compact_pct = 10600 * 100 / 100000 = 10%
-assert_contains "override beats COMPACT_OVERHEAD" "$out" "10%"
+out=$(CTX_BAR_WIDTH=4 run 130000 0 0 0 1000000)
+assert_contains "CTX_BAR_WIDTH=4 yields a 4-cell bar" "$out" "█░░░"
+assert_not_contains "CTX_BAR_WIDTH=4 is not the default width" "$out" "██████████"
+
+# PACE_BAR_WIDTH changes the 7d throttle-meter length. Build a payload with 5h+7d
+# limits, window half-elapsed at 50% used -> on pace -> empty meter of the given width.
+reset_state
+_now=$(date +%s); _r5=$((_now + 3600)); _r7=$((_now + 302400))
+_pace_json='{"session_id":"'"${SESSION}"'","model":{"display_name":"Opus 4.6 (1M context)"},"workspace":{"current_dir":"/x","project_dir":"/x"},"cost":{"total_cost_usd":1.50,"total_api_duration_ms":60000},"context_window":{"current_usage":{"input_tokens":10000},"context_window_size":1000000},"rate_limits":{"five_hour":{"used_percentage":40,"resets_at":'"${_r5}"'},"seven_day":{"used_percentage":50,"resets_at":'"${_r7}"'}}}'
+out=$(echo "$_pace_json" | PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+assert_contains "PACE_BAR_WIDTH=8 yields an 8-cell meter" "$out" "░░░░░░░░"
 
 echo ""
 echo "=== Context total color thresholds ==="
