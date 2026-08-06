@@ -18,7 +18,7 @@ Left to right:
 - **Auth / plan letter** — `K` (ANTHROPIC_API_KEY), `M` Max, `P` Pro, `T` Team, `E` Enterprise, `A` other. Hidden when logged out with no key.
 - **Location** *(conditional)* — agent name, worktree, or directory basename; shown only when it differs from the project root.
 - **Context** — total tokens plus a **usage bar**. The bar fills to the first ceiling that binds — the 400K retrieval quality line or the auto-compact threshold, whichever is smaller. Past 400K it pegs full and adds a `▶` arrowhead. Colored by absolute token count (see below).
-- **Rate limits** *(when available)* — 5-hour and 7-day usage as `<time-to-reset> <percent>%`, separated by `·`. The 7-day limit is followed by a **bidirectional pace meter**: empty = on pace; it fills **left in red** when you're burning too fast (you'll hit the cap before the window resets) and **right in blue** when you're burning too slow (you'll leave weekly budget unused — it's lost at reset). Weekly budget doesn't roll over, so both directions matter.
+- **Rate limits** *(when available)* — 5-hour and 7-day usage as `<time-to-reset> <percent>%`, separated by `·`. The 7-day limit is followed by a **bidirectional gas-pedal pace meter**: empty = on pace; it fills **left in red** when you're burning too fast (you'll hit the cap before the window resets) and **right in blue** when you're burning too slow (you'll leave weekly budget unused — it's lost at reset). It's time-aware: a steady off-pace burn stays calm early (still time to correct) and only fills as it gets urgent near the reset. Weekly budget doesn't roll over, so both directions matter.
 - **Cost + timing** — total API request time, this round's spend (`+$`), and cumulative session cost.
 
 ## Color coding
@@ -88,6 +88,8 @@ Configure via environment variables. The cleanest place is the `env` block in `s
 |----------|---------|--------|
 | `CTX_BAR_WIDTH` | 8 | Cells in the context usage bar. |
 | `PACE_BAR_WIDTH` | 8 | Cells in the 7-day pace meter. |
+| `PACE_TOL` | 10 | Pace-meter dead-band (percent of urgency); inside it the meter reads empty/on-pace. |
+| `PACE_GAMMA` | 1.5 | Pace-meter response curve: `1` linear, higher keeps it flatter/calmer until urgent. |
 | `PACE_WORK` | — | Your work schedule `"<days> <start>-<end>"` local (e.g. `"Mon-Fri 09-18"`; days a range or comma list, hours 24h). The pace meter then judges "will I run dry in time?" against the last work moment before the reset instead of the reset itself — useful for a work account you only run on a schedule. It still warns if you'd run dry during work, but stops penalizing you for off-hours you won't use; and it stays correct even when the reset drifts mid-week (a reset during work hours just judges to the reset). |
 | `COMPACT_OVERHEAD` | 33000 | Tokens subtracted from the window to approximate the auto-compact threshold. |
 | `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | — | If set (e.g. `75`), treats auto-compact as that percent of the window; wins over `COMPACT_OVERHEAD`. |

@@ -156,27 +156,28 @@ Approximated as `ctx_max - 33000`. Override with `COMPACT_OVERHEAD` env var.
 | `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | unset | If set (e.g. 75), treats the auto-compact threshold as that percent of the window; wins over `COMPACT_OVERHEAD`. |
 | `CTX_BAR_WIDTH` | 8 | Cells in the context usage bar. |
 | `PACE_BAR_WIDTH` | 8 | Cells in the 7d pace meter. |
-| `PACE_TOL` | 10 | On-pace tolerance: projected utilization within ±this of 100% shows an empty (neutral) meter. |
-| `PACE_SPAN` | 50 | Deviation beyond the tolerance band that fills the meter fully; full deflection is at `\|projected-100\| = PACE_TOL + PACE_SPAN`. |
+| `PACE_TOL` | 10 | On-pace dead-band as a percent of urgency (0-100): urgency below it reads as an empty (neutral) meter. |
+| `PACE_GAMMA` | 1.5 | Response curve above the dead-band. `1` linear; `1.5` (default) / `2` / `3` keep the calm end flatter, ramping up only as correcting gets urgent. |
 | `PACE_WORK` | unset | Your weekly work schedule (`"<days> <start>-<end>"` local 24h, e.g. `"Mon-Fri 09-18"`; days a range like `Mon-Fri` or a comma list like `Mon,Wed,Fri`; hours `HH` or `HH:MM`). The 7d pace meter judges pace against your work schedule instead of the reset (see below). Unset = judge to the reset. |
 | `PACE_HORIZON_TS` | unset | Absolute-epoch override of the computed horizon (advanced / tests). Takes precedence over `PACE_WORK`. |
 | `CLAUDE_JSON_PATH` | `~/.claude.json` | Credential file the auth/plan letter reads (tests point it at fixtures). |
 
-### 7d pace meter (bidirectional)
+### 7d pace meter (bidirectional gas-pedal)
 
-The 7d pace meter is a bidirectional throttle around one target: **use ~100% of the weekly budget by the horizon, without walling first.** Unused 7-day allowance is lost at reset, so both directions are failures worth flagging.
-
-It shows the signed deviation of *projected end-of-horizon utilization* from 100%:
+The 7d pace meter is a bidirectional gauge around one target: **use ~100% of the weekly budget by the horizon, without walling first.** Unused 7-day allowance is lost at reset, so both directions are failures worth flagging. Think of it as a gas pedal: it shows how far your foot is from the *cruise* rate that lands you at exactly 100% at the horizon — and how little time is left to move it.
 
 ```
-projected = used% * (elapsed + time-to-horizon) / elapsed
+wall = (100 - used%) * elapsed / used%     # seconds until you'd hit 100% at the current rate
+r    = time-to-horizon / wall              # r=1 on pace, >1 too hot, <1 too cold
 ```
 
-- **On pace** (`|projected-100| <= PACE_TOL`): empty, neutral grey.
-- **Too hot** (`projected > 100`, you'd hit the cap before the horizon): fills from the **left**, escalating **yellow → orange → red** with magnitude. A full red bar means back off hard; there is no overflow marker (being further over doesn't change the action).
-- **Too cold** (`projected < 100`, you'd reach the horizon with budget unused): fills from the **right** in **blue**. It never escalates — leaving budget on the table is a milder, cliff-free cost, so the color stays calm while the fill shows how much.
+- **On pace** (`r ≈ 1`): empty, neutral grey.
+- **Too hot** (`r > 1`, pressing harder than cruise — you'd wall before the horizon): fills from the **left**, escalating **yellow → orange → red**. A full red bar means back off hard; no overflow marker (being further over doesn't change the action).
+- **Too cold** (`r < 1`, pressing softer than cruise — you'd reach the horizon with budget unused): fills from the **right** in **blue**. `1/r` is literally "how much harder you'd need to press to not waste." It never escalates — leaving budget on the table is a milder, cliff-free cost.
 
-Fill magnitude is `(|projected-100| - PACE_TOL)` scaled so `PACE_SPAN` beyond the band is a full bar. There is deliberately **no "used >= 90% → red" rule**: the projection subsumes it — 95% used mid-window projects far over 100 (hot), while 95% used near the reset projects ~95 (on pace, you used it well), which the old rule would have wrongly alarmed.
+**The fill is urgency, not raw deviation**, which is the key property: it is *time-aware*. The fill is the fraction of your remaining slack you've used up (`(remaining - wall)/remaining` hot, `(wall - remaining)/wall` cold), so it stays near-empty early — when there's plenty of time to correct — and rises toward the horizon. A *steady* off-pace burn (the common case) therefore sits calm most of the week and only fills when scaling back or flooring it is actually urgent, rather than parking at a constant fill all week the way a raw-deviation meter would.
+
+`PACE_TOL` is the on-pace dead-band (percent of urgency); above it, urgency is shaped by `PACE_GAMMA` (`1` linear, `1.5` default and up keep the calm end flatter) and mapped to `PACE_BAR_WIDTH` cells. Hot color steps at ≥3 cells (orange) and ≥6 (red). There is deliberately **no "used >= 90% → red" rule**: the urgency subsumes it — 95% used mid-window has an imminent wall (hot), while 95% used near the reset has `r ≈ 1` (on pace, you used it well), which such a rule would have wrongly alarmed.
 
 ### 7d pace work schedule
 

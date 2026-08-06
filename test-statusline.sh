@@ -239,66 +239,84 @@ out=$(pace_json 50 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
 assert_contains "PACE_BAR_WIDTH=8 yields an 8-cell meter" "$out" "░░░░░░░░"
 
 echo ""
-echo "=== 7d pace meter (bidirectional: projected utilization) ==="
+echo "=== 7d pace meter (gas-pedal urgency) ==="
 
-# Window half-elapsed (302400s left, elapsed 302400), so projected = 2 * used%.
-# Target is 100% by the horizon; the meter shows the signed deviation.
-# HOT (projected > 100) fills from the LEFT, yellow -> orange -> red; COLD
-# (projected < 100) fills from the RIGHT in blue; on pace (|dev| <= 10) is empty.
+# Window half-elapsed (302400s left, elapsed 302400). Urgency comes from
+# wall = (100-used)*elapsed/used and r = remaining/wall; HOT (r>1) fills from the
+# LEFT (yellow->orange->red), COLD (r<1) fills from the RIGHT in blue, on-pace is
+# empty. Tests pin PACE_GAMMA=1 (linear) so cell counts are exact; PACE_TOL=10.
 YEL=$'\033[33m'; ORG=$'\033[38;5;208m'; RD=$'\033[31m'; BLU=$'\033[38;5;33m'
+pace_lin(){ pace_json "$1" 302400 | PACE_GAMMA=1 PACE_BAR_WIDTH=8 bash "$STATUSLINE"; }
 
-# On pace: 50% used -> projected 100 -> empty neutral meter.
+# On pace: 50% used at half-elapsed -> r=1 -> empty.
 reset_state
-out=$(pace_json 50 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+out=$(pace_lin 50 | strip_ansi)
 assert_contains "on pace: empty meter" "$out" "50% ░░░░░░░░"
 
-# Hot, escalating by magnitude:
-reset_state   # 58% -> projected 116 -> 1 cell, yellow
-raw=$(pace_json 58 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE"); out=$(printf '%s' "$raw" | strip_ansi)
-assert_contains "mild hot: 1-cell from left" "$out" "58% █░░░░░░░"
+# Dead-band: 52% -> urgency ~76 permille < PACE_TOL(100) -> still empty.
+reset_state
+out=$(pace_lin 52 | strip_ansi)
+assert_contains "within tolerance: empty meter" "$out" "52% ░░░░░░░░"
+
+# Hot, escalating by urgency: 55% -> 1 (yellow), 65% -> 3 (orange), 80% -> 6 (red).
+reset_state
+raw=$(pace_lin 55); out=$(printf '%s' "$raw" | strip_ansi)
+assert_contains "mild hot: 1-cell from left" "$out" "55% █░░░░░░░"
 assert_contains "mild hot is yellow" "$raw" "${YEL}█"
-reset_state   # 65% -> projected 130 -> 3 cells, orange
-raw=$(pace_json 65 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE"); out=$(printf '%s' "$raw" | strip_ansi)
+reset_state
+raw=$(pace_lin 65); out=$(printf '%s' "$raw" | strip_ansi)
 assert_contains "moderate hot: 3-cell" "$out" "65% ███░░░░░"
 assert_contains "moderate hot is orange" "$raw" "${ORG}███"
-reset_state   # 75% -> projected 150 -> 6 cells, red
-raw=$(pace_json 75 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE"); out=$(printf '%s' "$raw" | strip_ansi)
-assert_contains "severe hot: 6-cell" "$out" "75% ██████░░"
+reset_state
+raw=$(pace_lin 80); out=$(printf '%s' "$raw" | strip_ansi)
+assert_contains "severe hot: 6-cell" "$out" "80% ██████░░"
 assert_contains "severe hot is red" "$raw" "${RD}██████"
 
 # Cold (leaving budget on the table): fills from the RIGHT in blue, never escalates.
-reset_state   # 30% -> projected 60 -> 5 cells cold
-raw=$(pace_json 30 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE"); out=$(printf '%s' "$raw" | strip_ansi)
-assert_contains "cold: fills from the right" "$out" "30% ░░░█████"
-assert_contains "cold is blue" "$raw" "${BLU}█████"
-reset_state   # 42% -> projected 84 -> 1 cell cold
-out=$(pace_json 42 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
-assert_contains "mild cold: 1 cell on the right" "$out" "42% ░░░░░░░█"
+reset_state
+raw=$(pace_lin 30); out=$(printf '%s' "$raw" | strip_ansi)
+assert_contains "cold: 4-cell from the right" "$out" "30% ░░░░████"
+assert_contains "cold is blue" "$raw" "${BLU}████"
+reset_state
+out=$(pace_lin 42 | strip_ansi)
+assert_contains "mild cold: 2 cells on the right" "$out" "42% ░░░░░░██"
 
 # No overflow marker even when very hot (clamps at full).
-reset_state   # 90% -> projected 180 -> full red, no marker
-out=$(pace_json 90 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
-assert_contains "very hot: full bar" "$out" "90% ████████"
+reset_state
+out=$(pace_lin 95 | strip_ansi)
+assert_contains "very hot: full bar" "$out" "95% ████████"
 assert_not_contains "very hot: no overflow marker" "$out" "▶"
 
+# Default gamma (1.5) exercises the integer-sqrt shaping and stays calmer: 70% used,
+# which is 4 cells linear, becomes 3 cells at the default curve.
+reset_state
+raw=$(pace_json 70 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE"); out=$(printf '%s' "$raw" | strip_ansi)
+assert_contains "default gamma 1.5: 3-cell (calmer than linear's 4)" "$out" "70% ███░░░░░"
+assert_contains "default gamma still orange" "$raw" "${ORG}███"
+
+# Higher gamma keeps the low end flatter still: 70% is 4 cells linear, 2 cells at gamma 2.
+reset_state
+out=$(pace_json 70 302400 | PACE_GAMMA=2 PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+assert_contains "gamma 2 flattens 70% to 2 cells" "$out" "70% ██░░░░░░"
+reset_state
+out=$(pace_lin 70 | strip_ansi)
+assert_contains "linear gamma keeps 70% at 4 cells" "$out" "70% ████░░░░"
+
 echo ""
-echo "=== 7d pace horizon shifts the target comparison ==="
+echo "=== 7d pace is time-aware (same rate, different time left) ==="
 
-# The horizon (forced with PACE_HORIZON_TS) changes the time-to-horizon in the
-# projection. Baseline 70% used, half-elapsed -> projected 140 (5-cell orange).
+# Same 70% used at the same rate, but the horizon changes how much you must fit in.
+# To the full reset (302400s away) you'd overshoot -> HOT (4-cell orange, linear).
+reset_state
+out=$(pace_lin 70 | strip_ansi)
+assert_contains "far horizon: hot (overshoot)" "$out" "70% ████░░░░"
 
-# A nearer horizon (200000s < the 302400s to reset) -> less time -> projected ~116
-# -> cooler (1-cell yellow).
+# To a near horizon (100000s < the 129600s to your 100% wall) you'd finish ~93% ->
+# COLD (you'd leave a little unused) -> 1 cell of blue on the right.
 reset_state
 _now=$(date +%s)
-out=$(pace_json 70 302400 | PACE_HORIZON_TS=$((_now + 200000)) PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
-assert_contains "nearer horizon eases the meter to 1 cell" "$out" "70% █░░░░░░░"
-
-# A horizon near enough that you'd only finish at ~97% -> on pace -> empty.
-reset_state
-_now=$(date +%s)
-out=$(pace_json 70 302400 | PACE_HORIZON_TS=$((_now + 120000)) PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
-assert_contains "near horizon: made it -> empty" "$out" "70% ░░░░░░░░"
+out=$(pace_json 70 302400 | PACE_HORIZON_TS=$((_now + 100000)) PACE_GAMMA=1 PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+assert_contains "near horizon: flips to cold, 1 cell right" "$out" "70% ░░░░░░░█"
 
 # Horizon already passed (coasting) -> meter hidden entirely.
 reset_state
@@ -310,8 +328,8 @@ assert_not_contains "coasting: no empty meter either" "$out" "70% ░"
 
 # Malformed PACE_WORK falls back to judging against the reset (no crash).
 reset_state
-out=$(pace_json 70 302400 | PACE_WORK="garbage" PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
-assert_contains "bad PACE_WORK falls back to reset (5-cell)" "$out" "70% █████░░░"
+out=$(pace_json 70 302400 | PACE_WORK="garbage" PACE_GAMMA=1 PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+assert_contains "bad PACE_WORK falls back to reset (4-cell)" "$out" "70% ████░░░░"
 
 # A well-formed PACE_WORK renders without error (schedule actually parses).
 reset_state

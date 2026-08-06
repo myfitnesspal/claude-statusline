@@ -61,11 +61,12 @@ RESET='\033[0m'
 # alone; set them equal for a matched look.
 CTX_BAR_WIDTH="${CTX_BAR_WIDTH:-8}"
 PACE_BAR_WIDTH="${PACE_BAR_WIDTH:-8}"
-# 7d pace meter tuning: PACE_TOL is the on-pace tolerance band (± projected %,
-# grey/empty inside it); PACE_SPAN is the deviation beyond the band that fills the
-# meter fully. So full deflection is at |projected-100| = PACE_TOL + PACE_SPAN.
+# 7d pace meter tuning. PACE_TOL is the on-pace dead-band as a percent of urgency
+# (0-100): urgency below it reads empty/on-pace. PACE_GAMMA shapes the response above
+# the band — 1 = linear, 1.5 (default) / 2 / 3 keep the low end flatter and calmer,
+# ramping up only as correcting gets urgent.
 PACE_TOL="${PACE_TOL:-10}"
-PACE_SPAN="${PACE_SPAN:-50}"
+PACE_GAMMA="${PACE_GAMMA:-1.5}"
 
 # Build a bar string: `filled` solid cells (█) out of `width`, the rest empty (░).
 bar_of() {
@@ -75,6 +76,28 @@ bar_of() {
 		i=$((i + 1))
 	done
 	printf '%s' "$out"
+}
+
+# Integer square root (Newton's method).
+_isqrt() {
+	local n=$1 x y
+	[ "$n" -lt 2 ] && { printf '%s' "$n"; return; }
+	x=$n; y=$(( (x + 1) / 2 ))
+	while [ "$y" -lt "$x" ]; do x=$y; y=$(( (x + n / x) / 2 )); done
+	printf '%s' "$x"
+}
+
+# Apply PACE_GAMMA to a permille value (0-1000). Presets: 1 linear, 1.5 (default,
+# flatter low end via x^1.5 = x*sqrt(x)), 2 (x^2), 3 (x^3). Unknown -> linear.
+pace_shape() {
+	local x=$1 s
+	case "$PACE_GAMMA" in
+		1|1.0) printf '%s' "$x" ;;
+		1.5)   s=$(_isqrt $(( x * 1000 ))); printf '%s' "$(( x * s / 1000 ))" ;;
+		2|2.0) printf '%s' "$(( x * x / 1000 ))" ;;
+		3|3.0) printf '%s' "$(( x * x / 1000 * x / 1000 ))" ;;
+		*)     printf '%s' "$x" ;;
+	esac
 }
 
 # Human-friendly token formatting (1234 -> 1.2k, 200000 -> 200k, 1000000 -> 1M)
@@ -308,19 +331,20 @@ pace_horizon() {
 	return 1
 }
 
-# 7d pace meter, appended to the 7d limit — a bidirectional throttle around "on
-# pace to use ~100% of the weekly budget by the horizon." It shows the SIGNED
-# deviation of projected end-of-horizon utilization from that target:
-#   projected = used% * (elapsed + time-to-horizon) / elapsed
-# EMPTY/grey = on pace (within PACE_TOL). TOO HOT (projected > 100, you'd wall
-# before the horizon) fills from the LEFT and escalates yellow -> orange -> red.
-# TOO COLD (projected < 100, you'd reach the horizon with budget unused — lost at
-# reset) fills from the RIGHT in blue; it never escalates, because leaving budget on
-# the table is a milder, cliff-free cost. Fill magnitude = how far off pace. No
-# overflow marker (a full hot bar already means "back off hard"). Hidden the first
-# ~8h. Note there is deliberately no "used >= 90% -> red" rule: the projection
-# already handles it — 95% used mid-window projects far over 100 (hot), while 95%
-# used near the reset projects ~95 (on pace, you used it well).
+# 7d pace meter, appended to the 7d limit — a bidirectional gas-pedal gauge around
+# the cruise rate that would land you at exactly 100% used at the horizon. It shows
+# how far your foot is from cruise, WEIGHTED BY HOW LITTLE TIME IS LEFT to move it:
+#   wall = seconds until you'd hit 100% at your current average rate
+#   r    = time-to-horizon / wall        (r=1 on pace; >1 too hot; <1 too cold)
+# HOT (r > 1, pressing harder than cruise -> you'd wall before the horizon) fills from
+# the LEFT and escalates yellow -> orange -> red. COLD (r < 1, pressing softer -> you'd
+# reach the horizon with budget unused, lost at reset) fills from the RIGHT in blue and
+# never escalates (a milder, cliff-free cost). The fill is URGENCY = how little slack
+# is left, so it stays calm early (plenty of time to correct) and rises as the horizon
+# nears — a steady off-pace burn is near-empty most of the week, filling only when
+# scaling back (hot) or flooring it (cold) is actually urgent. PACE_TOL is the on-pace
+# dead-band; PACE_GAMMA shapes how flat the calm end stays. No overflow marker (a full
+# hot bar already means back off hard). Hidden the first ~8h.
 #
 # The horizon is the reset by default. Set PACE_WORK ("<days> <start>-<end>" local,
 # e.g. "Mon-Fri 09-18") to judge pace against your work schedule instead: the burn
@@ -336,7 +360,7 @@ fmt_pace() {
 	[ -z "$pct" ] && return
 	[ -z "$reset_ts" ] && return
 	[ "$pct" -le 0 ] && return
-	local now window remaining_reset elapsed horizon h remaining projected dev ad mag w cells color
+	local now window remaining_reset elapsed horizon h remaining wall hot u tolp e cells w color
 	now=$(date +%s)
 	window=604800
 	remaining_reset=$((reset_ts - now))
@@ -358,18 +382,31 @@ fmt_pace() {
 	remaining=$((horizon - now))
 	[ "$remaining" -le 0 ] && return
 
-	# Projected end-of-horizon utilization, and its signed deviation from 100%.
+	# Gas-pedal urgency (permille). wall = time to hit 100% at the current rate; the
+	# side is hot when you'd hit it before the horizon, cold when after. Urgency is the
+	# fraction of the near-horizon slack you've used up, so it climbs toward the horizon.
 	w=$PACE_BAR_WIDTH
-	projected=$(( pct * (elapsed + remaining) / elapsed ))
-	dev=$(( projected - 100 ))
-	ad=$dev; [ "$ad" -lt 0 ] && ad=$(( -ad ))
-	mag=$(( ad - PACE_TOL )); [ "$mag" -lt 0 ] && mag=0
-	cells=$(( (mag * w + PACE_SPAN / 2) / PACE_SPAN )); [ "$cells" -gt "$w" ] && cells=$w
+	wall=$(( (100 - pct) * elapsed / pct ))
+	if [ "$remaining" -gt "$wall" ]; then
+		hot=1; u=$(( (remaining - wall) * 1000 / remaining ))
+	else
+		hot=0; u=$(( (wall - remaining) * 1000 / wall ))
+	fi
+
+	# Dead-band, then gamma-shape the remainder into bar cells.
+	tolp=$(( PACE_TOL * 10 ))
+	if [ "$u" -le "$tolp" ]; then
+		cells=0
+	else
+		e=$(( (u - tolp) * 1000 / (1000 - tolp) ))
+		e=$(pace_shape "$e")
+		cells=$(( (e * w + 500) / 1000 )); [ "$cells" -gt "$w" ] && cells=$w
+	fi
 
 	if [ "$cells" -eq 0 ]; then
 		# On pace (within tolerance): neutral, empty.
 		printf ' %b%b' "${NORMAL}$(bar_of 0 "$w")" "$NORMAL"
-	elif [ "$dev" -gt 0 ]; then
+	elif [ "$hot" -eq 1 ]; then
 		# Too hot: fills from the left, yellow -> orange -> red by magnitude.
 		color="$YELLOW"; [ "$cells" -ge 3 ] && color="$ORANGE"; [ "$cells" -ge 6 ] && color="$RED"
 		printf ' %b%b' "${color}$(bar_of "$cells" "$cells")${NORMAL}$(bar_of 0 $(( w - cells )))" "$NORMAL"
