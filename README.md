@@ -92,7 +92,7 @@ Configure via environment variables. The cleanest place is the `env` block in `s
 | `STATUSLINE_PACE_GAMMA` | 1.5 | Pace-meter response curve: `1` linear, higher keeps it flatter/calmer until urgent. |
 | `STATUSLINE_PACE_WORK` | — | Your work schedule `"<days> <start>-<end>"` local (e.g. `"Mon-Fri 09-18"`; days a range or comma list, hours 24h). The pace meter then judges "will I run dry in time?" against the last work moment before the reset instead of the reset itself — useful for a work account you only run on a schedule. It still warns if you'd run dry during work, but stops penalizing you for off-hours you won't use; and it stays correct even when the reset drifts mid-week (a reset during work hours just judges to the reset). |
 | `STATUSLINE_COMPACT_OVERHEAD` | 33000 | Tokens subtracted from the window to approximate the auto-compact threshold. |
-| `STATUSLINE_AUTOCOMPACT_PCT_OVERRIDE` | — | If set (e.g. `75`), treats auto-compact as that percent of the window; wins over `STATUSLINE_COMPACT_OVERHEAD`. |
+| `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | — | Claude Code's own variable (not namespaced, on purpose): if set (e.g. `75`), treats auto-compact as that percent of the window; wins over `STATUSLINE_COMPACT_OVERHEAD`. The statusline reads the same var Claude Code does. |
 
 Colors and thresholds live at the top of `statusline.sh`:
 

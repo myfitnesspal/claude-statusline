@@ -153,7 +153,7 @@ Approximated as `ctx_max - 33000`. Override with `STATUSLINE_COMPACT_OVERHEAD` e
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `STATUSLINE_COMPACT_OVERHEAD` | 33000 | Tokens subtracted from the window to approximate the auto-compact threshold. |
-| `STATUSLINE_AUTOCOMPACT_PCT_OVERRIDE` | unset | If set (e.g. 75), treats the auto-compact threshold as that percent of the window; wins over `STATUSLINE_COMPACT_OVERHEAD`. |
+| `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | unset | Claude Code's own variable (deliberately **not** namespaced): if set (e.g. 75), treats the auto-compact threshold as that percent of the window; wins over `STATUSLINE_COMPACT_OVERHEAD`. Keying off the official var means the bar reflects the same auto-compact override Claude Code is actually using. |
 | `STATUSLINE_CTX_BAR_WIDTH` | 8 | Cells in the context usage bar. |
 | `STATUSLINE_PACE_BAR_WIDTH` | 8 | Cells in the 7d pace meter. |
 | `STATUSLINE_PACE_TOL` | 10 | On-pace dead-band as a percent of urgency (0-100): urgency below it reads as an empty (neutral) meter. |

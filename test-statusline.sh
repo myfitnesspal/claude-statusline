@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STATUSLINE="$SCRIPT_DIR/statusline.sh"
 
 # Ensure env vars don't leak into tests
-unset STATUSLINE_AUTOCOMPACT_PCT_OVERRIDE
+unset CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
 unset STATUSLINE_COMPACT_OVERHEAD
 unset ANTHROPIC_API_KEY
 PASS=0
@@ -196,7 +196,7 @@ assert_contains "small-window overflow pegs full" "$raw" "███████�
 assert_not_contains "small-window overflow: no marker" "$raw" "▶"
 
 echo ""
-echo "=== STATUSLINE_AUTOCOMPACT_PCT_OVERRIDE ==="
+echo "=== CLAUDE_AUTOCOMPACT_PCT_OVERRIDE ==="
 
 # Override shifts the denominator, seen in the fill level (marker is red-gated, so
 # a 200K window never shows one). 130000 tokens on 200K:
@@ -207,7 +207,7 @@ out=$(STATUSLINE_CTX_BAR_WIDTH=10 run 130000 0 0 0 200000)
 assert_contains "default denominator: 8-cell bar" "$out" "████████░░"
 assert_not_contains "default denominator: no marker" "$out" "▶"
 reset_state
-out=$(STATUSLINE_CTX_BAR_WIDTH=10 STATUSLINE_AUTOCOMPACT_PCT_OVERRIDE=50 run 130000 0 0 0 200000)
+out=$(STATUSLINE_CTX_BAR_WIDTH=10 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 run 130000 0 0 0 200000)
 assert_contains "override=50 shrinks denominator, pegs full" "$out" "██████████"
 assert_not_contains "override=50: still no marker on small window" "$out" "▶"
 
@@ -219,7 +219,7 @@ assert_contains "STATUSLINE_COMPACT_OVERHEAD shrinks denominator, pegs full" "$o
 # Override beats STATUSLINE_COMPACT_OVERHEAD: override=50 (cap=100000) pegs full; overhead=0
 # would give cap=200000 -> 65% (a 7-cell bar), so a full bar proves override won.
 reset_state
-out=$(STATUSLINE_CTX_BAR_WIDTH=10 STATUSLINE_AUTOCOMPACT_PCT_OVERRIDE=50 STATUSLINE_COMPACT_OVERHEAD=0 run 130000 0 0 0 200000)
+out=$(STATUSLINE_CTX_BAR_WIDTH=10 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 STATUSLINE_COMPACT_OVERHEAD=0 run 130000 0 0 0 200000)
 assert_contains "override beats STATUSLINE_COMPACT_OVERHEAD" "$out" "██████████"
 assert_not_contains "override beats STATUSLINE_COMPACT_OVERHEAD (not overhead's bar)" "$out" "███████░░░"
 

@@ -36,10 +36,12 @@ STATE_FILE="/tmp/claude-statusline-${session_id}"
 NEWROUND_FILE="/tmp/claude-statusline-newround-${session_id}"
 
 # Auto-compact threshold: the token count that triggers compaction.
-# If STATUSLINE_AUTOCOMPACT_PCT_OVERRIDE is set (e.g. 85), use it as the threshold percentage.
-# Otherwise, approximate: contextWindow - STATUSLINE_COMPACT_OVERHEAD (default 33000).
-if [ -n "${STATUSLINE_AUTOCOMPACT_PCT_OVERRIDE:-}" ]; then
-	compact_threshold=$((ctx_max * STATUSLINE_AUTOCOMPACT_PCT_OVERRIDE / 100))
+# CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is Claude Code's OWN variable (do NOT namespace it):
+# reading the same var Claude Code uses keeps the bar in sync with the real override.
+# If set (e.g. 85), use it as the threshold percentage. Otherwise approximate:
+# contextWindow - STATUSLINE_COMPACT_OVERHEAD (default 33000).
+if [ -n "${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-}" ]; then
+	compact_threshold=$((ctx_max * CLAUDE_AUTOCOMPACT_PCT_OVERRIDE / 100))
 else
 	compact_overhead=${STATUSLINE_COMPACT_OVERHEAD:-33000}
 	compact_threshold=$((ctx_max - compact_overhead))
