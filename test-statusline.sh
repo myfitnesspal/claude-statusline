@@ -22,6 +22,9 @@ AUTH_JSON_DIR="/tmp/claude-statusline-authtest-$$"
 mkdir -p "$AUTH_JSON_DIR"
 echo '{}' > "$AUTH_JSON_DIR/logged-out.json"
 echo '{"oauthAccount":{"organizationType":"claude_enterprise"}}' > "$AUTH_JSON_DIR/enterprise.json"
+echo '{"oauthAccount":{"organizationType":"claude_max"}}' > "$AUTH_JSON_DIR/max.json"
+echo '{"oauthAccount":{"organizationType":"claude_pro"}}' > "$AUTH_JSON_DIR/pro.json"
+echo '{"oauthAccount":{"organizationType":"claude_team"}}' > "$AUTH_JSON_DIR/team.json"
 echo '{"oauthAccount":{"organizationType":"console"}}' > "$AUTH_JSON_DIR/console.json"
 export CLAUDE_JSON_PATH="$AUTH_JSON_DIR/logged-out.json"
 
@@ -400,10 +403,25 @@ reset_state
 out=$(CLAUDE_JSON_PATH="$AUTH_JSON_DIR/enterprise.json" run 100 500 10000 200 200000)
 assert_contains "Enterprise login shows E" "$out" "200k E "
 
-# Non-enterprise (Console/API) login: A
+# Max subscription: M
+reset_state
+out=$(CLAUDE_JSON_PATH="$AUTH_JSON_DIR/max.json" run 100 500 10000 200 200000)
+assert_contains "Max login shows M" "$out" "200k M "
+
+# Pro subscription: P
+reset_state
+out=$(CLAUDE_JSON_PATH="$AUTH_JSON_DIR/pro.json" run 100 500 10000 200 200000)
+assert_contains "Pro login shows P" "$out" "200k P "
+
+# Team subscription: T
+reset_state
+out=$(CLAUDE_JSON_PATH="$AUTH_JSON_DIR/team.json" run 100 500 10000 200 200000)
+assert_contains "Team login shows T" "$out" "200k T "
+
+# Unknown/other OAuth org (e.g. console): A fallback
 reset_state
 out=$(CLAUDE_JSON_PATH="$AUTH_JSON_DIR/console.json" run 100 500 10000 200 200000)
-assert_contains "Console login shows A" "$out" "200k A "
+assert_contains "Unknown org falls back to A" "$out" "200k A "
 
 # Logged out, no key: indicator hidden
 reset_state
@@ -411,6 +429,7 @@ out=$(run 100 500 10000 200 200000)
 assert_not_contains "logged out hides E" "$out" "200k E "
 assert_not_contains "logged out hides A" "$out" "200k A "
 assert_not_contains "logged out hides K" "$out" "200k K "
+assert_not_contains "logged out hides M" "$out" "200k M "
 
 # Same gray as the rest of section 1: no color escape between model and letter
 reset_state
