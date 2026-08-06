@@ -4,7 +4,6 @@
 #
 # Context total colored by absolute token thresholds (retrieval quality):
 #   green < 120K, yellow 120-250K, orange 250-400K, red >= 400K
-# Cache age shown when >= 3 minutes since last API call (yellow 3-5m, red > 5m)
 #
 # Requires: jq
 # Requires: UserPromptSubmit hook running round-reset.sh
@@ -88,56 +87,26 @@ fmt_tokens() {
 	fi
 }
 
-# State format v5: version|round_start_cost|last_activity_ts|last_api_ms|cold_latch
-# last_activity_ts is the render time at which the model last hit the API (see
-# cache-age note below), NOT merely the last render. cold_latch holds the idle gap
-# of a turn that started with an expired cache (see the new-round block). Legacy
-# formats are still read for graceful in-session upgrade:
-#   v4: 4|round_start_cost|last_activity_ts|last_api_ms   (no latch)
-#   v3: 3|round_start_cost|last_ts                        (last_ts treated as last activity)
-#   v2: 2|round_start_cost|msg_count|last_ts              (dropped msg count between the two)
+# State format v6: version|round_start_cost. Only the per-round cost baseline is
+# persisted now. round_start_cost is field 2 of every prior format, so all legacy
+# state files (v2-v5) still yield it on read; their extra fields are ignored.
 round_start_cost=$cost
-last_activity_ts=0
-last_api_ms=""
-cold_latch=0
 if [ -f "$STATE_FILE" ]; then
-	IFS='|' read -r _ver _rsc _f2 _f3 _f4 < "$STATE_FILE"
+	IFS='|' read -r _ver _rsc _rest < "$STATE_FILE"
 	case "$_ver" in
-		5) round_start_cost=$_rsc; last_activity_ts=${_f2:-0}; last_api_ms=${_f3:-}; cold_latch=${_f4:-0} ;;
-		4) round_start_cost=$_rsc; last_activity_ts=${_f2:-0}; last_api_ms=${_f3:-} ;;
-		3) round_start_cost=$_rsc; last_activity_ts=${_f2:-0} ;;
-		2) round_start_cost=$_rsc; last_activity_ts=${_f3:-0} ;;
+		6|5|4|3|2) round_start_cost=$_rsc ;;
 	esac
 fi
-
-# Cache age: seconds the model has been IDLE (predicts prompt-cache TTL expiry).
-# The signal is time since the last API call, not time since the last render:
-# a render fires at the end of a long turn too, and measuring render-to-render
-# gaps counted that busy turn as idle time — so the indicator flashed stale for
-# one frame at turn end, then cleared. We instead advance last_activity_ts only
-# when total_api_duration_ms grew since the last render (the model actually hit
-# the API). While the model works, api_ms climbs and the age stays 0; it only
-# accumulates during genuine idle. Missing baseline (fresh state / legacy
-# upgrade) counts as activity, so we start warm rather than falsely stale.
 now=$(date +%s)
-if [ -z "$last_api_ms" ] || [ "$api_ms" != "$last_api_ms" ] || [ "$last_activity_ts" -eq 0 ]; then
-	last_activity_ts=$now
-fi
-cache_age=$((now - last_activity_ts))
 
-# New round = a fresh human turn (UserPromptSubmit hook). Reset round cost. If the
-# cache expired during the idle gap before this turn, latch that gap so the cold
-# indicator stays visible for the whole turn: the turn's own first API call resets
-# cache_age to 0, which would otherwise flash the indicator away the instant work
-# resumed. The latch clears when a turn instead starts warm (cache_age < 300).
+# New round = a fresh human turn (UserPromptSubmit hook): reset the round cost baseline.
 if [ -f "$NEWROUND_FILE" ]; then
 	round_start_cost=$cost
-	if [ "$cache_age" -ge 300 ]; then cold_latch=$cache_age; else cold_latch=0; fi
 	rm -f "$NEWROUND_FILE"
 fi
 
 # Save state
-echo "5|${round_start_cost}|${last_activity_ts}|${api_ms}|${cold_latch}" > "$STATE_FILE"
+echo "6|${round_start_cost}" > "$STATE_FILE"
 
 # Usage snapshot for programmatic reads (agent self-throttling). Authoritative rate-limit
 # fields come straight from Claude Code's statusline input; persisted here each render so a
@@ -314,24 +283,12 @@ if [ -f "$HOME/src/claude-config/hooks/subagent-status.sh" ]; then
 	fi
 fi
 
-# Cache age indicator (hidden when warm < 3 minutes). A latched cold turn keeps
-# its expired idle gap shown (red) for the whole turn; otherwise the live idle
-# age shows red past 5m (TTL expired) or yellow past 3m (at risk).
-cache_part=""
-if [ "$cold_latch" -ge 300 ]; then
-	cache_part=" · ${RED}$(fmt_duration "$cold_latch")${NORMAL}"
-elif [ "$cache_age" -ge 300 ]; then
-	cache_part=" · ${RED}$(fmt_duration "$cache_age")${NORMAL}"
-elif [ "$cache_age" -ge 180 ]; then
-	cache_part=" · ${YELLOW}$(fmt_duration "$cache_age")${NORMAL}"
-fi
-
 parts="${NORMAL}${short_model}"
 [ -n "$auth_letter" ] && parts="${parts} ${auth_letter}"
 [ -n "$location" ] && parts="${parts} ${location}"
 [ -n "$sa_status" ] && parts="${parts} ${sa_status}${NORMAL}"
 parts="${parts} |"
-parts="${parts} ${ctx_color}$(fmt_tokens "$ctx_tokens") ${ctx_bar}${NORMAL}${cache_part}"
+parts="${parts} ${ctx_color}$(fmt_tokens "$ctx_tokens") ${ctx_bar}${NORMAL}"
 api_secs=$((api_ms / 1000))
 round_cost=$(awk "BEGIN {printf \"%.2f\", $cost - $round_start_cost}")
 cost_fmt=$(printf '%s +$%s $%.2f' "$(fmt_duration "$api_secs")" "$round_cost" "$cost")

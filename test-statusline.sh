@@ -292,101 +292,21 @@ out=$(run 100 500 10000 200 200000)
 assert_not_contains "legacy v2 msg count not rendered" "$out" "msg"
 
 echo ""
-echo "=== Cache age timer ==="
+echo "=== Context section has no trailing indicator ==="
 
-# Cache age measures IDLE time since the model last hit the API, detected by
-# total_api_duration_ms changing between renders. State v4:
-#   4|round_start_cost|last_activity_ts|last_api_ms
-# The run helper's default api_duration_ms is 60000; the fixtures below match it
-# so "no activity" means api_ms unchanged.
-
-# Warm cache: last activity was just now, api_ms unchanged -> hidden.
+# The context section is just the token count and the usage bar — no
+# dot-separated suffix. Legacy state files with extra trailing fields are
+# ignored and never produce one.
 reset_state
-now=$(date +%s)
-echo "4|1.50|${now}|60000" > "/tmp/claude-statusline-${SESSION}"
+echo "5|1.50|$(($(date +%s) - 800))|60000|800" > "/tmp/claude-statusline-${SESSION}"
 out=$(run 100 500 10000 200 200000 1.50 60000)
-assert_not_contains "warm cache hidden (recent)" "$out" "·"
+assert_not_contains "no dot-separated suffix (legacy state)" "$out" "·"
+assert_not_contains "no duration suffix (legacy state)" "$out" "13m"
 
-# At risk (3-5 minutes idle, no new API activity): yellow, shown
 reset_state
-stale_ts=$(($(date +%s) - 240))  # last activity 4 minutes ago
-echo "4|1.50|${stale_ts}|60000" > "/tmp/claude-statusline-${SESSION}"
-out=$(run 100 500 10000 200 200000 1.50 60000)
-assert_contains "at-risk cache shows 4m" "$out" "4m"
-
-# Cold (> 5 minutes idle): red, shown
-reset_state
-cold_ts=$(($(date +%s) - 420))  # last activity 7 minutes ago
-echo "4|1.50|${cold_ts}|60000" > "/tmp/claude-statusline-${SESSION}"
-out=$(run 100 500 10000 200 200000 1.50 60000)
-assert_contains "cold cache shows 7m" "$out" "7m"
-
-# Anti-flash: last render was long ago, BUT the model just did API work
-# (api_ms grew). The gap was busy time, not idle time -> hidden, no flash.
-# This is the bug fix: a long turn must not flash a stale indicator at its end.
-reset_state
-stale_ts=$(($(date +%s) - 240))
-echo "4|1.50|${stale_ts}|60000" > "/tmp/claude-statusline-${SESSION}"
-out=$(run 100 500 10000 200 200000 1.50 120000)  # api_ms grew 60000 -> 120000
-assert_not_contains "active turn does not flash stale (age hidden)" "$out" "4m"
-
-# Cache age color: at-risk is yellow
-reset_state
-stale_ts=$(($(date +%s) - 240))
-echo "4|1.50|${stale_ts}|60000" > "/tmp/claude-statusline-${SESSION}"
-raw=$(run_raw 100 500 10000 200 200000 1.50 60000)
-assert_contains "at-risk cache is yellow" "$raw" $'\033[33m4m'
-
-# Cache age color: cold is red
-reset_state
-cold_ts=$(($(date +%s) - 420))
-echo "4|1.50|${cold_ts}|60000" > "/tmp/claude-statusline-${SESSION}"
-raw=$(run_raw 100 500 10000 200 200000 1.50 60000)
-assert_contains "cold cache is red" "$raw" $'\033[31m7m'
-
-# First call of session: no previous timestamp, no cache indicator
-reset_state
-out=$(run 100 500 10000 200 200000)
-assert_not_contains "first call: no cache age" "$out" "0m"
-
-echo ""
-echo "=== Cache cold latch (persist through a human turn) ==="
-
-# When a human turn starts with an EXPIRED cache (idle >= 5m), the cold indicator
-# must stay visible for the whole turn — the turn's own API activity would
-# otherwise reset cache_age to 0 and flash the indicator away. State v5 field 5 is
-# the latched idle gap. Fixtures use api_ms=60000 as the pre-turn baseline.
-
-# Turn starts expired (idle 800s = 13m): latched, shown; persists once the model
-# starts working in the same turn (api_ms grows -> live cache_age would be 0).
-reset_state
-_ago=$(($(date +%s) - 800))
-echo "5|1.50|${_ago}|60000|0" > "/tmp/claude-statusline-${SESSION}"
 echo "reset" > "/tmp/claude-statusline-newround-${SESSION}"
-out=$(run 100 500 10000 200 200000 1.50 60000)
-assert_contains "expired cache shown at turn start" "$out" "13m"
-out=$(run 100 500 10000 200 200000 1.50 120000)  # model now active this turn
-assert_contains "expired cache persists through the turn" "$out" "13m"
-
-# Next turn starts warm (idle 10s): the stale latch is cleared, indicator hidden.
-reset_state
-_recent=$(($(date +%s) - 10))
-echo "5|1.50|${_recent}|60000|800" > "/tmp/claude-statusline-${SESSION}"
-echo "reset" > "/tmp/claude-statusline-newround-${SESSION}"
-out=$(run 100 500 10000 200 200000 1.50 60000)
-assert_not_contains "warm turn clears the cold latch" "$out" "13m"
-assert_not_contains "warm turn shows no cache indicator" "$out" "·"
-
-# At-risk (yellow, 240s = 4m) is NOT expired, so it does NOT latch: it shows at
-# turn start but clears once the turn's activity resets the idle clock.
-reset_state
-_ago=$(($(date +%s) - 240))
-echo "5|1.50|${_ago}|60000|0" > "/tmp/claude-statusline-${SESSION}"
-echo "reset" > "/tmp/claude-statusline-newround-${SESSION}"
-out=$(run 100 500 10000 200 200000 1.50 60000)
-assert_contains "at-risk shown at turn start" "$out" "4m"
-out=$(run 100 500 10000 200 200000 1.50 120000)  # activity, not latched
-assert_not_contains "at-risk not latched (clears on activity)" "$out" "4m"
+out=$(run 100 500 10000 200 200000 1.50 120000)
+assert_not_contains "no dot-separated suffix (new round)" "$out" "·"
 
 echo ""
 echo "=== Per-round cost ==="
@@ -465,6 +385,12 @@ reset_state
 echo "2|1.20|7|0" > "/tmp/claude-statusline-${SESSION}"
 out=$(run 100 500 10000 200 200000 1.50)
 assert_contains "v2 state: round cost from field 2" "$out" "+\$0.30"
+
+# Legacy v5 state (extra trailing fields) still yields its round cost.
+reset_state
+echo "5|1.10|1700000000|60000|0" > "/tmp/claude-statusline-${SESSION}"
+out=$(run 100 500 10000 200 200000 1.50)
+assert_contains "v5 state: round cost from field 2" "$out" "+\$0.40"
 
 echo ""
 echo "=== Auth mode indicator ==="

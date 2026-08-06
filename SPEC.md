@@ -28,10 +28,9 @@ O4.6 200k | 34k 17% · 12msg · 7m | 2h14m 11% · 3d5h 12% | 19m +$0.05 $0.67
 - Subagent governance status shown only when subagent hooks are installed
 
 ### Section 2: Context health
-`34k █████░░░ · 7m`
+`34k █████░░░`
 
 - **Total context**: absolute token count colored by retrieval quality thresholds, followed by a **usage bar**. The bar fills to `usable_cap = min(compact_threshold, 400000)` — a full bar is that ceiling (the 400K retrieval red line, or the auto-compact threshold when it binds first). The bar inherits the token-count color (green < 120K, yellow 120-250K, orange 250-400K, red >= 400K). Overflow marker: a `▶` arrowhead fused to the bar (adds one cell, reading as the bar continuing off-scale), shown only in the **red zone** (>= 400K) and strictly past the ceiling. On a small window the ceiling is the compact threshold (below 400K, so red is unreachable) — the bar just pegs full with no marker, since auto-compact self-heals. Width is `CTX_BAR_WIDTH` cells (default 8).
-- **Cache age**: time since last API call, predicts whether prompt cache is warm. Hidden when < 3 minutes (cache warm). Shown yellow at 3-5 minutes (at risk), red > 5 minutes (cold, ~5 minute TTL expired).
 - Output tokens are NOT shown — they aren't in context yet (will fold in on next call)
 
 ### Section 3: Rate limits
@@ -65,13 +64,6 @@ An earlier version showed a colored user-message count as a second degradation a
 ### Per-round input delta removed
 Per-round input size is not an independent degradation factor. A single turn loading 80K from file reads is healthier than four 20K turns of conversational refinement. What matters is cumulative total tokens and conversational structure, not per-turn volume.
 
-### Cache age replaces cache hit percentage
-A session-averaged cache hit percentage isn't actionable. What matters is whether the cache is warm right now, which predicts whether the next message will be fast and cheap or slow and expensive. The ~5 minute TTL means a timer since the last API call is the most predictive signal.
-
-The age is measured from the last **API activity**, not the last render. The statusline re-renders at the end of a turn too, so a render-to-render timer counted a long busy turn as idle cooling time — the indicator flashed stale for one frame right as a turn finished, then cleared on the next render. Instead, `last_activity_ts` only advances when `cost.total_api_duration_ms` grew since the previous render (the model actually hit the API). While the model works, `api_ms` climbs and the age stays 0; it accumulates only during genuine idle. A missing baseline (fresh state or a legacy-format upgrade) counts as activity so the session starts warm rather than falsely stale.
-
-**Cold latch — persist through a human turn.** Activity-gating fixed the turn-*end* flash but left a turn-*start* one: when you return after a break, the first render shows the cold cache, but that turn's own first API call resets `cache_age` to 0 and clears the indicator before you register it. So a new round (UserPromptSubmit) that starts with an expired cache (`cache_age >= 300`) latches the idle gap into `cold_latch`; the display shows that frozen gap (red) for the whole turn regardless of the turn's own activity, and the latch clears when a turn instead starts warm. This keeps the "you came back to a cold cache, this turn paid for it" signal on screen for the one human turn where it matters.
-
 ### Round boundaries are set by UserPromptSubmit hook
 `round-reset.sh` creates a marker file on each user prompt. The statusline resets round cost when it sees this marker.
 
@@ -83,7 +75,6 @@ Output tokens from the current call aren't in `ctx_tokens` yet — they fold int
 | Field | Green | Yellow | Orange | Red |
 |-------|-------|--------|--------|-----|
 | Context total (tokens) | < 120K | 120-250K | 250-400K | >= 400K |
-| Cache age | < 3m (hidden) | 3-5m | — | > 5m |
 | Rate limits | < 50% | 50-79% | — | >= 80% |
 
 ### Context threshold rationale
@@ -138,12 +129,10 @@ From the `StatuslineUpdate` hook payload (dumped via `jq . > /tmp/debug.json`):
 ## State Management
 
 State file: `/tmp/claude-statusline-{session_id}`
-Format (v5): `5|round_start_cost|last_activity_ts|last_api_ms|cold_latch`
+Format (v6): `6|round_start_cost`
 
-- Version prefix distinguishes formats; unrecognized/old state files are reset on read.
-- Legacy formats are still read for graceful in-session upgrade: v4 `4|round_start_cost|last_activity_ts|last_api_ms` (no latch), v3 `3|round_start_cost|last_ts` (its `last_ts` is treated as `last_activity_ts`), and v2 `2|round_start_cost|msg_count|last_ts` (the dropped message count sat between `round_start_cost` and `last_ts`).
-- `last_activity_ts` is the epoch timestamp of the render at which the model last hit the API; `last_api_ms` is the `total_api_duration_ms` seen then. Together they let the next render tell busy time from idle time when computing cache age.
-- `cold_latch` is the idle gap (seconds) of a turn that started with an expired cache, or 0. It holds the cold indicator on screen for the whole turn; it is set/cleared at each new-round boundary.
+- Only the per-round cost baseline is persisted. `round_start_cost` is the session cost at the start of the current round; the per-round delta is `cost - round_start_cost`.
+- Version prefix distinguishes formats; unrecognized/old state files are reset on read. `round_start_cost` is field 2 of every prior format (v2-v5), so all legacy state files still yield it on read and their extra trailing fields are ignored.
 
 New-round marker: `/tmp/claude-statusline-newround-{session_id}`
 Created by `round-reset.sh` on `UserPromptSubmit` hook, consumed by statusline on next update.
