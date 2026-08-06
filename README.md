@@ -2,11 +2,7 @@
 
 A compact status bar for [Claude Code](https://claude.ai/code) that shows model, context health, rate-limit usage, and session cost on one line.
 
-![demo](demo.gif)
-
-```
-O4.6 1M M | 130k ███░░░░░ | 1h1m 12% · 3d5h 34% | 19m +$0.05 $2.50
-```
+![demo](demo.png)
 
 Sections are separated by `|`. Fields hide themselves when they aren't actionable, so the line stays short.
 
