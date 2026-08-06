@@ -8,14 +8,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STATUSLINE="$SCRIPT_DIR/statusline.sh"
 
 # Ensure env vars don't leak into tests
-unset CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
-unset COMPACT_OVERHEAD
+unset STATUSLINE_AUTOCOMPACT_PCT_OVERRIDE
+unset STATUSLINE_COMPACT_OVERHEAD
 unset ANTHROPIC_API_KEY
 PASS=0
 FAIL=0
 SESSION="test-$$"
 
-# Auth fixtures: statusline reads oauthAccount from CLAUDE_JSON_PATH.
+# Auth fixtures: statusline reads oauthAccount from STATUSLINE_JSON_PATH.
 # Default all tests to a logged-out fixture so the developer's real
 # ~/.claude.json doesn't leak into assertions.
 AUTH_JSON_DIR="/tmp/claude-statusline-authtest-$$"
@@ -26,7 +26,7 @@ echo '{"oauthAccount":{"organizationType":"claude_max"}}' > "$AUTH_JSON_DIR/max.
 echo '{"oauthAccount":{"organizationType":"claude_pro"}}' > "$AUTH_JSON_DIR/pro.json"
 echo '{"oauthAccount":{"organizationType":"claude_team"}}' > "$AUTH_JSON_DIR/team.json"
 echo '{"oauthAccount":{"organizationType":"console"}}' > "$AUTH_JSON_DIR/console.json"
-export CLAUDE_JSON_PATH="$AUTH_JSON_DIR/logged-out.json"
+export STATUSLINE_JSON_PATH="$AUTH_JSON_DIR/logged-out.json"
 
 # Clean up state files on exit
 cleanup() {
@@ -146,23 +146,23 @@ echo "=== Context usage bar ==="
 
 # The context percentage is rendered as a bar scaled to usable_cap =
 # min(compact_threshold, 400000). Full bar = the ceiling; past it the bar pegs
-# full and gets a ▸ overflow marker. Bars pinned to CTX_BAR_WIDTH=10 (one cell
+# full and gets a ▸ overflow marker. Bars pinned to STATUSLINE_CTX_BAR_WIDTH=10 (one cell
 # per 10%) so expected strings are deterministic regardless of the default.
 
 # Bar replaces the numeric percentage.
 # 1M window: cap=400000. 130000/400000 = 32% -> 3 cells.
 reset_state
-out=$(CTX_BAR_WIDTH=10 run 130000 0 0 0 1000000)
+out=$(STATUSLINE_CTX_BAR_WIDTH=10 run 130000 0 0 0 1000000)
 assert_contains "context renders a bar" "$out" "███░░░░░░░"
 assert_not_contains "percentage number removed" "$out" "32%"
 
 # Denominator scales with window: same tokens, smaller window -> fuller bar.
 # 167000 tokens: 200K window cap=167000 -> 100% (full); 1M window cap=400000 -> 41%.
 reset_state
-out=$(CTX_BAR_WIDTH=10 run 167000 0 0 0 200000)
+out=$(STATUSLINE_CTX_BAR_WIDTH=10 run 167000 0 0 0 200000)
 assert_contains "200K window: full at compact threshold" "$out" "██████████"
 reset_state
-out=$(CTX_BAR_WIDTH=10 run 167000 0 0 0 1000000)
+out=$(STATUSLINE_CTX_BAR_WIDTH=10 run 167000 0 0 0 1000000)
 assert_contains "1M window: same tokens, partial bar" "$out" "████░░░░░░"
 assert_not_contains "1M window: not full" "$out" "██████████"
 
@@ -171,18 +171,18 @@ assert_not_contains "1M window: not full" "$out" "██████████
 
 # Exactly at the ceiling (400K on 1M): full red bar, NO marker yet (not past it).
 reset_state
-out=$(CTX_BAR_WIDTH=10 run 400000 0 0 0 1000000)
+out=$(STATUSLINE_CTX_BAR_WIDTH=10 run 400000 0 0 0 1000000)
 assert_contains "at ceiling: full bar" "$out" "██████████"
 assert_not_contains "at ceiling: no marker" "$out" "▶"
 
 # Past the ceiling in the red zone: pegged full with the fused ▶ marker.
 reset_state
-out=$(CTX_BAR_WIDTH=10 run 410000 0 0 0 1000000)
+out=$(STATUSLINE_CTX_BAR_WIDTH=10 run 410000 0 0 0 1000000)
 assert_contains "past ceiling (red): full bar + fused marker" "$out" "██████████▶"
 
 # Full bar but NOT red (orange, 399K on 1M): no marker — marker is red-gated.
 reset_state
-raw=$(CTX_BAR_WIDTH=10 run_raw 399000 0 0 0 1000000)
+raw=$(STATUSLINE_CTX_BAR_WIDTH=10 run_raw 399000 0 0 0 1000000)
 assert_contains "orange full bar is orange" "$raw" $'\033[38;5;208m399k'
 assert_contains "orange full bar is full" "$raw" "██████████"
 assert_not_contains "orange full bar: no marker (not red)" "$raw" "▶"
@@ -190,53 +190,53 @@ assert_not_contains "orange full bar: no marker (not red)" "$raw" "▶"
 # Small window: ceiling is the compact threshold (< 400K) and 400K is unreachable,
 # so overflow pegs the bar full but shows NO marker (yellow, never red).
 reset_state
-raw=$(CTX_BAR_WIDTH=10 run_raw 180000 0 0 0 200000)
+raw=$(STATUSLINE_CTX_BAR_WIDTH=10 run_raw 180000 0 0 0 200000)
 assert_contains "small-window overflow is yellow" "$raw" $'\033[33m180k'
 assert_contains "small-window overflow pegs full" "$raw" "██████████"
 assert_not_contains "small-window overflow: no marker" "$raw" "▶"
 
 echo ""
-echo "=== CLAUDE_AUTOCOMPACT_PCT_OVERRIDE ==="
+echo "=== STATUSLINE_AUTOCOMPACT_PCT_OVERRIDE ==="
 
 # Override shifts the denominator, seen in the fill level (marker is red-gated, so
 # a 200K window never shows one). 130000 tokens on 200K:
 #   default cap=167000 -> 77% (8 cells)
 #   override=50 -> cap=100000 -> overflow -> pegged full (10 cells), no marker
 reset_state
-out=$(CTX_BAR_WIDTH=10 run 130000 0 0 0 200000)
+out=$(STATUSLINE_CTX_BAR_WIDTH=10 run 130000 0 0 0 200000)
 assert_contains "default denominator: 8-cell bar" "$out" "████████░░"
 assert_not_contains "default denominator: no marker" "$out" "▶"
 reset_state
-out=$(CTX_BAR_WIDTH=10 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 run 130000 0 0 0 200000)
+out=$(STATUSLINE_CTX_BAR_WIDTH=10 STATUSLINE_AUTOCOMPACT_PCT_OVERRIDE=50 run 130000 0 0 0 200000)
 assert_contains "override=50 shrinks denominator, pegs full" "$out" "██████████"
 assert_not_contains "override=50: still no marker on small window" "$out" "▶"
 
-# COMPACT_OVERHEAD shifts the denominator too: overhead=100000 on 200K -> cap=100000.
+# STATUSLINE_COMPACT_OVERHEAD shifts the denominator too: overhead=100000 on 200K -> cap=100000.
 reset_state
-out=$(CTX_BAR_WIDTH=10 COMPACT_OVERHEAD=100000 run 130000 0 0 0 200000)
-assert_contains "COMPACT_OVERHEAD shrinks denominator, pegs full" "$out" "██████████"
+out=$(STATUSLINE_CTX_BAR_WIDTH=10 STATUSLINE_COMPACT_OVERHEAD=100000 run 130000 0 0 0 200000)
+assert_contains "STATUSLINE_COMPACT_OVERHEAD shrinks denominator, pegs full" "$out" "██████████"
 
-# Override beats COMPACT_OVERHEAD: override=50 (cap=100000) pegs full; overhead=0
+# Override beats STATUSLINE_COMPACT_OVERHEAD: override=50 (cap=100000) pegs full; overhead=0
 # would give cap=200000 -> 65% (a 7-cell bar), so a full bar proves override won.
 reset_state
-out=$(CTX_BAR_WIDTH=10 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 COMPACT_OVERHEAD=0 run 130000 0 0 0 200000)
-assert_contains "override beats COMPACT_OVERHEAD" "$out" "██████████"
-assert_not_contains "override beats COMPACT_OVERHEAD (not overhead's bar)" "$out" "███████░░░"
+out=$(STATUSLINE_CTX_BAR_WIDTH=10 STATUSLINE_AUTOCOMPACT_PCT_OVERRIDE=50 STATUSLINE_COMPACT_OVERHEAD=0 run 130000 0 0 0 200000)
+assert_contains "override beats STATUSLINE_COMPACT_OVERHEAD" "$out" "██████████"
+assert_not_contains "override beats STATUSLINE_COMPACT_OVERHEAD (not overhead's bar)" "$out" "███████░░░"
 
 echo ""
 echo "=== Bar width knobs ==="
 
-# CTX_BAR_WIDTH changes the context bar length. 32% at width 4 -> 1 cell.
+# STATUSLINE_CTX_BAR_WIDTH changes the context bar length. 32% at width 4 -> 1 cell.
 reset_state
-out=$(CTX_BAR_WIDTH=4 run 130000 0 0 0 1000000)
-assert_contains "CTX_BAR_WIDTH=4 yields a 4-cell bar" "$out" "█░░░"
-assert_not_contains "CTX_BAR_WIDTH=4 is not the default width" "$out" "██████████"
+out=$(STATUSLINE_CTX_BAR_WIDTH=4 run 130000 0 0 0 1000000)
+assert_contains "STATUSLINE_CTX_BAR_WIDTH=4 yields a 4-cell bar" "$out" "█░░░"
+assert_not_contains "STATUSLINE_CTX_BAR_WIDTH=4 is not the default width" "$out" "██████████"
 
-# PACE_BAR_WIDTH changes the 7d pace-meter length. Half-elapsed window at 50%
+# STATUSLINE_PACE_BAR_WIDTH changes the 7d pace-meter length. Half-elapsed window at 50%
 # used -> exactly on pace -> empty meter of the given width.
 reset_state
-out=$(pace_json 50 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
-assert_contains "PACE_BAR_WIDTH=8 yields an 8-cell meter" "$out" "░░░░░░░░"
+out=$(pace_json 50 302400 | STATUSLINE_PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+assert_contains "STATUSLINE_PACE_BAR_WIDTH=8 yields an 8-cell meter" "$out" "░░░░░░░░"
 
 echo ""
 echo "=== 7d pace meter (gas-pedal urgency) ==="
@@ -244,16 +244,16 @@ echo "=== 7d pace meter (gas-pedal urgency) ==="
 # Window half-elapsed (302400s left, elapsed 302400). Urgency comes from
 # wall = (100-used)*elapsed/used and r = remaining/wall; HOT (r>1) fills from the
 # LEFT (yellow->orange->red), COLD (r<1) fills from the RIGHT in blue, on-pace is
-# empty. Tests pin PACE_GAMMA=1 (linear) so cell counts are exact; PACE_TOL=10.
+# empty. Tests pin STATUSLINE_PACE_GAMMA=1 (linear) so cell counts are exact; STATUSLINE_PACE_TOL=10.
 YEL=$'\033[33m'; ORG=$'\033[38;5;208m'; RD=$'\033[31m'; BLU=$'\033[38;5;33m'
-pace_lin(){ pace_json "$1" 302400 | PACE_GAMMA=1 PACE_BAR_WIDTH=8 bash "$STATUSLINE"; }
+pace_lin(){ pace_json "$1" 302400 | STATUSLINE_PACE_GAMMA=1 STATUSLINE_PACE_BAR_WIDTH=8 bash "$STATUSLINE"; }
 
 # On pace: 50% used at half-elapsed -> r=1 -> empty.
 reset_state
 out=$(pace_lin 50 | strip_ansi)
 assert_contains "on pace: empty meter" "$out" "50% ░░░░░░░░"
 
-# Dead-band: 52% -> urgency ~76 permille < PACE_TOL(100) -> still empty.
+# Dead-band: 52% -> urgency ~76 permille < STATUSLINE_PACE_TOL(100) -> still empty.
 reset_state
 out=$(pace_lin 52 | strip_ansi)
 assert_contains "within tolerance: empty meter" "$out" "52% ░░░░░░░░"
@@ -290,13 +290,13 @@ assert_not_contains "very hot: no overflow marker" "$out" "▶"
 # Default gamma (1.5) exercises the integer-sqrt shaping and stays calmer: 70% used,
 # which is 4 cells linear, becomes 3 cells at the default curve.
 reset_state
-raw=$(pace_json 70 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE"); out=$(printf '%s' "$raw" | strip_ansi)
+raw=$(pace_json 70 302400 | STATUSLINE_PACE_BAR_WIDTH=8 bash "$STATUSLINE"); out=$(printf '%s' "$raw" | strip_ansi)
 assert_contains "default gamma 1.5: 3-cell (calmer than linear's 4)" "$out" "70% ███░░░░░"
 assert_contains "default gamma still orange" "$raw" "${ORG}███"
 
 # Higher gamma keeps the low end flatter still: 70% is 4 cells linear, 2 cells at gamma 2.
 reset_state
-out=$(pace_json 70 302400 | PACE_GAMMA=2 PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+out=$(pace_json 70 302400 | STATUSLINE_PACE_GAMMA=2 STATUSLINE_PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
 assert_contains "gamma 2 flattens 70% to 2 cells" "$out" "70% ██░░░░░░"
 reset_state
 out=$(pace_lin 70 | strip_ansi)
@@ -315,26 +315,26 @@ assert_contains "far horizon: hot (overshoot)" "$out" "70% ████░░░
 # COLD (you'd leave a little unused) -> 1 cell of blue on the right.
 reset_state
 _now=$(date +%s)
-out=$(pace_json 70 302400 | PACE_HORIZON_TS=$((_now + 100000)) PACE_GAMMA=1 PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+out=$(pace_json 70 302400 | STATUSLINE_PACE_HORIZON_TS=$((_now + 100000)) STATUSLINE_PACE_GAMMA=1 STATUSLINE_PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
 assert_contains "near horizon: flips to cold, 1 cell right" "$out" "70% ░░░░░░░█"
 
 # Horizon already passed (coasting) -> meter hidden entirely.
 reset_state
 _now=$(date +%s)
-out=$(pace_json 70 302400 | PACE_HORIZON_TS=$((_now - 1000)) PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+out=$(pace_json 70 302400 | STATUSLINE_PACE_HORIZON_TS=$((_now - 1000)) STATUSLINE_PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
 assert_contains "coasting: 7d percent still shown" "$out" "70%"
 assert_not_contains "coasting: pace meter hidden (no fill)" "$out" "70% █"
 assert_not_contains "coasting: no empty meter either" "$out" "70% ░"
 
-# Malformed PACE_WORK falls back to judging against the reset (no crash).
+# Malformed STATUSLINE_PACE_WORK falls back to judging against the reset (no crash).
 reset_state
-out=$(pace_json 70 302400 | PACE_WORK="garbage" PACE_GAMMA=1 PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
-assert_contains "bad PACE_WORK falls back to reset (4-cell)" "$out" "70% ████░░░░"
+out=$(pace_json 70 302400 | STATUSLINE_PACE_WORK="garbage" STATUSLINE_PACE_GAMMA=1 STATUSLINE_PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+assert_contains "bad STATUSLINE_PACE_WORK falls back to reset (4-cell)" "$out" "70% ████░░░░"
 
-# A well-formed PACE_WORK renders without error (schedule actually parses).
+# A well-formed STATUSLINE_PACE_WORK renders without error (schedule actually parses).
 reset_state
-out=$(pace_json 70 302400 | PACE_WORK="Mon-Fri 09-18" PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
-assert_contains "valid PACE_WORK still renders the 7d limit" "$out" "70%"
+out=$(pace_json 70 302400 | STATUSLINE_PACE_WORK="Mon-Fri 09-18" STATUSLINE_PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+assert_contains "valid STATUSLINE_PACE_WORK still renders the 7d limit" "$out" "70%"
 
 echo ""
 echo "=== 7d pace work horizon computation (pace_horizon) ==="
@@ -346,23 +346,23 @@ echo "=== 7d pace work horizon computation (pace_horizon) ==="
 sed -n '/^_pace_dow() {/,/^}/p; /^pace_horizon() {/,/^}/p' "$STATUSLINE" > "$AUTH_JSON_DIR/pace_horizon_fns.sh"
 source "$AUTH_JSON_DIR/pace_horizon_fns.sh"
 
-h=$(TZ=UTC PACE_WORK="Mon-Fri 09-18" pace_horizon 561600 932400)
+h=$(TZ=UTC STATUSLINE_PACE_WORK="Mon-Fri 09-18" pace_horizon 561600 932400)
 assert_contains "weekend reset (Sun 19:00) -> Friday 18:00" "$h" "756000"
 
-h=$(TZ=UTC PACE_WORK="Mon-Fri 09-18" pace_horizon 561600 658800)
+h=$(TZ=UTC STATUSLINE_PACE_WORK="Mon-Fri 09-18" pace_horizon 561600 658800)
 assert_contains "mid-week reset (Thu 15:00, in work hours) -> the reset itself" "$h" "658800"
 
-h=$(TZ=UTC PACE_WORK="Mon-Fri 09-18" pace_horizon 561600 979200)
+h=$(TZ=UTC STATUSLINE_PACE_WORK="Mon-Fri 09-18" pace_horizon 561600 979200)
 assert_contains "pre-work reset (Mon 08:00) -> prior Friday 18:00" "$h" "756000"
 
-h=$(TZ=UTC PACE_WORK="Mon-Fri 9-18" pace_horizon 561600 932400)
+h=$(TZ=UTC STATUSLINE_PACE_WORK="Mon-Fri 9-18" pace_horizon 561600 932400)
 assert_contains "single-digit hours parse" "$h" "756000"
 
-h=$(TZ=UTC PACE_WORK="Sat-Sun 10-16" pace_horizon 561600 932400)
+h=$(TZ=UTC STATUSLINE_PACE_WORK="Sat-Sun 10-16" pace_horizon 561600 932400)
 assert_contains "weekend-worker: Sun 19:00 reset -> Sun 16:00 work-end" "$h" "$((932400 - 3*3600))"
 
-h=$(TZ=UTC PACE_WORK="garbage" pace_horizon 561600 932400) || true
-if [ -z "$h" ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); echo "FAIL: malformed PACE_WORK should yield no horizon (got: $h)"; fi
+h=$(TZ=UTC STATUSLINE_PACE_WORK="garbage" pace_horizon 561600 932400) || true
+if [ -z "$h" ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); echo "FAIL: malformed STATUSLINE_PACE_WORK should yield no horizon (got: $h)"; fi
 
 echo ""
 echo "=== Context total color thresholds ==="
@@ -530,32 +530,32 @@ echo "=== Auth mode indicator ==="
 
 # ANTHROPIC_API_KEY set: K shown after model, regardless of login state
 reset_state
-out=$(ANTHROPIC_API_KEY="sk-ant-test" CLAUDE_JSON_PATH="$AUTH_JSON_DIR/enterprise.json" run 100 500 10000 200 200000)
+out=$(ANTHROPIC_API_KEY="sk-ant-test" STATUSLINE_JSON_PATH="$AUTH_JSON_DIR/enterprise.json" run 100 500 10000 200 200000)
 assert_contains "API key session shows K" "$out" "200k K "
 
 # Enterprise claude.ai login: E
 reset_state
-out=$(CLAUDE_JSON_PATH="$AUTH_JSON_DIR/enterprise.json" run 100 500 10000 200 200000)
+out=$(STATUSLINE_JSON_PATH="$AUTH_JSON_DIR/enterprise.json" run 100 500 10000 200 200000)
 assert_contains "Enterprise login shows E" "$out" "200k E "
 
 # Max subscription: M
 reset_state
-out=$(CLAUDE_JSON_PATH="$AUTH_JSON_DIR/max.json" run 100 500 10000 200 200000)
+out=$(STATUSLINE_JSON_PATH="$AUTH_JSON_DIR/max.json" run 100 500 10000 200 200000)
 assert_contains "Max login shows M" "$out" "200k M "
 
 # Pro subscription: P
 reset_state
-out=$(CLAUDE_JSON_PATH="$AUTH_JSON_DIR/pro.json" run 100 500 10000 200 200000)
+out=$(STATUSLINE_JSON_PATH="$AUTH_JSON_DIR/pro.json" run 100 500 10000 200 200000)
 assert_contains "Pro login shows P" "$out" "200k P "
 
 # Team subscription: T
 reset_state
-out=$(CLAUDE_JSON_PATH="$AUTH_JSON_DIR/team.json" run 100 500 10000 200 200000)
+out=$(STATUSLINE_JSON_PATH="$AUTH_JSON_DIR/team.json" run 100 500 10000 200 200000)
 assert_contains "Team login shows T" "$out" "200k T "
 
 # Unknown/other OAuth org (e.g. console): A fallback
 reset_state
-out=$(CLAUDE_JSON_PATH="$AUTH_JSON_DIR/console.json" run 100 500 10000 200 200000)
+out=$(STATUSLINE_JSON_PATH="$AUTH_JSON_DIR/console.json" run 100 500 10000 200 200000)
 assert_contains "Unknown org falls back to A" "$out" "200k A "
 
 # Logged out, no key: indicator hidden
@@ -568,7 +568,7 @@ assert_not_contains "logged out hides M" "$out" "200k M "
 
 # Same gray as the rest of section 1: no color escape between model and letter
 reset_state
-raw=$(CLAUDE_JSON_PATH="$AUTH_JSON_DIR/enterprise.json" run_raw 100 500 10000 200 200000)
+raw=$(STATUSLINE_JSON_PATH="$AUTH_JSON_DIR/enterprise.json" run_raw 100 500 10000 200 200000)
 assert_contains "auth letter uncolored" "$raw" "200k E "
 
 echo ""

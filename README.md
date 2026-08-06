@@ -80,19 +80,19 @@ Configure via environment variables. The cleanest place is the `env` block in `s
 
 ```json
 {
-  "env": { "PACE_WORK": "Mon-Fri 09-18" }
+  "env": { "STATUSLINE_PACE_WORK": "Mon-Fri 09-18" }
 }
 ```
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `CTX_BAR_WIDTH` | 8 | Cells in the context usage bar. |
-| `PACE_BAR_WIDTH` | 8 | Cells in the 7-day pace meter. |
-| `PACE_TOL` | 10 | Pace-meter dead-band (percent of urgency); inside it the meter reads empty/on-pace. |
-| `PACE_GAMMA` | 1.5 | Pace-meter response curve: `1` linear, higher keeps it flatter/calmer until urgent. |
-| `PACE_WORK` | — | Your work schedule `"<days> <start>-<end>"` local (e.g. `"Mon-Fri 09-18"`; days a range or comma list, hours 24h). The pace meter then judges "will I run dry in time?" against the last work moment before the reset instead of the reset itself — useful for a work account you only run on a schedule. It still warns if you'd run dry during work, but stops penalizing you for off-hours you won't use; and it stays correct even when the reset drifts mid-week (a reset during work hours just judges to the reset). |
-| `COMPACT_OVERHEAD` | 33000 | Tokens subtracted from the window to approximate the auto-compact threshold. |
-| `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | — | If set (e.g. `75`), treats auto-compact as that percent of the window; wins over `COMPACT_OVERHEAD`. |
+| `STATUSLINE_CTX_BAR_WIDTH` | 8 | Cells in the context usage bar. |
+| `STATUSLINE_PACE_BAR_WIDTH` | 8 | Cells in the 7-day pace meter. |
+| `STATUSLINE_PACE_TOL` | 10 | Pace-meter dead-band (percent of urgency); inside it the meter reads empty/on-pace. |
+| `STATUSLINE_PACE_GAMMA` | 1.5 | Pace-meter response curve: `1` linear, higher keeps it flatter/calmer until urgent. |
+| `STATUSLINE_PACE_WORK` | — | Your work schedule `"<days> <start>-<end>"` local (e.g. `"Mon-Fri 09-18"`; days a range or comma list, hours 24h). The pace meter then judges "will I run dry in time?" against the last work moment before the reset instead of the reset itself — useful for a work account you only run on a schedule. It still warns if you'd run dry during work, but stops penalizing you for off-hours you won't use; and it stays correct even when the reset drifts mid-week (a reset during work hours just judges to the reset). |
+| `STATUSLINE_COMPACT_OVERHEAD` | 33000 | Tokens subtracted from the window to approximate the auto-compact threshold. |
+| `STATUSLINE_AUTOCOMPACT_PCT_OVERRIDE` | — | If set (e.g. `75`), treats auto-compact as that percent of the window; wins over `STATUSLINE_COMPACT_OVERHEAD`. |
 
 Colors and thresholds live at the top of `statusline.sh`:
 

@@ -36,12 +36,12 @@ STATE_FILE="/tmp/claude-statusline-${session_id}"
 NEWROUND_FILE="/tmp/claude-statusline-newround-${session_id}"
 
 # Auto-compact threshold: the token count that triggers compaction.
-# If CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is set (e.g. 85), use it as the threshold percentage.
-# Otherwise, approximate: contextWindow - COMPACT_OVERHEAD (default 33000).
-if [ -n "${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-}" ]; then
-	compact_threshold=$((ctx_max * CLAUDE_AUTOCOMPACT_PCT_OVERRIDE / 100))
+# If STATUSLINE_AUTOCOMPACT_PCT_OVERRIDE is set (e.g. 85), use it as the threshold percentage.
+# Otherwise, approximate: contextWindow - STATUSLINE_COMPACT_OVERHEAD (default 33000).
+if [ -n "${STATUSLINE_AUTOCOMPACT_PCT_OVERRIDE:-}" ]; then
+	compact_threshold=$((ctx_max * STATUSLINE_AUTOCOMPACT_PCT_OVERRIDE / 100))
 else
-	compact_overhead=${COMPACT_OVERHEAD:-33000}
+	compact_overhead=${STATUSLINE_COMPACT_OVERHEAD:-33000}
 	compact_threshold=$((ctx_max - compact_overhead))
 fi
 [ "$compact_threshold" -le 0 ] && compact_threshold=1
@@ -59,14 +59,14 @@ RESET='\033[0m'
 # Bar widths, in cells. Two bars use them: the context usage bar and the 7d
 # pace meter. Independent knobs (env-overridable) so either can be tuned
 # alone; set them equal for a matched look.
-CTX_BAR_WIDTH="${CTX_BAR_WIDTH:-8}"
-PACE_BAR_WIDTH="${PACE_BAR_WIDTH:-8}"
-# 7d pace meter tuning. PACE_TOL is the on-pace dead-band as a percent of urgency
-# (0-100): urgency below it reads empty/on-pace. PACE_GAMMA shapes the response above
+STATUSLINE_CTX_BAR_WIDTH="${STATUSLINE_CTX_BAR_WIDTH:-8}"
+STATUSLINE_PACE_BAR_WIDTH="${STATUSLINE_PACE_BAR_WIDTH:-8}"
+# 7d pace meter tuning. STATUSLINE_PACE_TOL is the on-pace dead-band as a percent of urgency
+# (0-100): urgency below it reads empty/on-pace. STATUSLINE_PACE_GAMMA shapes the response above
 # the band — 1 = linear, 1.5 (default) / 2 / 3 keep the low end flatter and calmer,
 # ramping up only as correcting gets urgent.
-PACE_TOL="${PACE_TOL:-10}"
-PACE_GAMMA="${PACE_GAMMA:-1.5}"
+STATUSLINE_PACE_TOL="${STATUSLINE_PACE_TOL:-10}"
+STATUSLINE_PACE_GAMMA="${STATUSLINE_PACE_GAMMA:-1.5}"
 
 # Build a bar string: `filled` solid cells (█) out of `width`, the rest empty (░).
 bar_of() {
@@ -87,11 +87,11 @@ _isqrt() {
 	printf '%s' "$x"
 }
 
-# Apply PACE_GAMMA to a permille value (0-1000). Presets: 1 linear, 1.5 (default,
+# Apply STATUSLINE_PACE_GAMMA to a permille value (0-1000). Presets: 1 linear, 1.5 (default,
 # flatter low end via x^1.5 = x*sqrt(x)), 2 (x^2), 3 (x^3). Unknown -> linear.
 pace_shape() {
 	local x=$1 s
-	case "$PACE_GAMMA" in
+	case "$STATUSLINE_PACE_GAMMA" in
 		1|1.0) printf '%s' "$x" ;;
 		1.5)   s=$(_isqrt $(( x * 1000 ))); printf '%s' "$(( x * s / 1000 ))" ;;
 		2|2.0) printf '%s' "$(( x * x / 1000 ))" ;;
@@ -168,9 +168,9 @@ fi
 # (>= 400K) and strictly past the ceiling. On a small window the ceiling is the
 # compact threshold (< 400K, unreachable-red), so the bar just pegs full with no
 # marker — auto-compact self-heals, so it needs no alarm glyph.
-ctx_filled=$(( (compact_pct * CTX_BAR_WIDTH + 50) / 100 ))
-[ "$ctx_filled" -gt "$CTX_BAR_WIDTH" ] && ctx_filled=$CTX_BAR_WIDTH
-ctx_bar=$(bar_of "$ctx_filled" "$CTX_BAR_WIDTH")
+ctx_filled=$(( (compact_pct * STATUSLINE_CTX_BAR_WIDTH + 50) / 100 ))
+[ "$ctx_filled" -gt "$STATUSLINE_CTX_BAR_WIDTH" ] && ctx_filled=$STATUSLINE_CTX_BAR_WIDTH
+ctx_bar=$(bar_of "$ctx_filled" "$STATUSLINE_CTX_BAR_WIDTH")
 if [ "$ctx_tokens" -ge 400000 ] && [ "$ctx_tokens" -gt "$usable_cap" ]; then
 	ctx_bar="${ctx_bar}▶"
 fi
@@ -225,12 +225,12 @@ fmt_limit() {
 # non-empty org type (unknown/fallback). Hidden when logged out with no key.
 # The env var wins because Claude Code prefers an approved ANTHROPIC_API_KEY
 # over the stored OAuth login.
-# CLAUDE_JSON_PATH overrides the credential file location (tests).
+# STATUSLINE_JSON_PATH overrides the credential file location (tests).
 auth_letter=""
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
 	auth_letter="K"
 else
-	claude_json="${CLAUDE_JSON_PATH:-$HOME/.claude.json}"
+	claude_json="${STATUSLINE_JSON_PATH:-$HOME/.claude.json}"
 	if [ -f "$claude_json" ]; then
 		org_type=$(jq -r 'if .oauthAccount then (.oauthAccount.organizationType // "unknown") else "" end' "$claude_json" 2>/dev/null)
 		case "$org_type" in
@@ -253,9 +253,9 @@ _pace_dow() {
 }
 
 # Effective pace horizon: the latest work-active instant at or before the reset, per
-# PACE_WORK ("<days> <start>-<end>" local 24h, e.g. "Mon-Fri 09-18"; days a range
+# STATUSLINE_PACE_WORK ("<days> <start>-<end>" local 24h, e.g. "Mon-Fri 09-18"; days a range
 # like Mon-Fri or a comma list like Mon,Wed,Fri; hours HH or HH:MM). Echoes that
-# epoch; echoes nothing and returns 1 if PACE_WORK is unset or malformed. $1 = now
+# epoch; echoes nothing and returns 1 if STATUSLINE_PACE_WORK is unset or malformed. $1 = now
 # epoch, $2 = reset epoch. Wall-clock components are derived from the epoch plus the
 # current `date +%z` offset — pure arithmetic, portable, DST-approximate (offset
 # sampled once). If the reset falls inside work hours the horizon IS the reset (you
@@ -263,7 +263,7 @@ _pace_dow() {
 # work-end, so the meter later hides once that work-end is behind you.
 pace_horizon() {
 	local now=$1 reset=$2 spec days_spec hours_spec start_spec end_spec
-	spec="${PACE_WORK:-}"
+	spec="${STATUSLINE_PACE_WORK:-}"
 	[ -z "$spec" ] && return 1
 	days_spec="${spec%% *}"
 	hours_spec="${spec#* }"; hours_spec="${hours_spec// /}"
@@ -342,17 +342,17 @@ pace_horizon() {
 # never escalates (a milder, cliff-free cost). The fill is URGENCY = how little slack
 # is left, so it stays calm early (plenty of time to correct) and rises as the horizon
 # nears — a steady off-pace burn is near-empty most of the week, filling only when
-# scaling back (hot) or flooring it (cold) is actually urgent. PACE_TOL is the on-pace
-# dead-band; PACE_GAMMA shapes how flat the calm end stays. No overflow marker (a full
+# scaling back (hot) or flooring it (cold) is actually urgent. STATUSLINE_PACE_TOL is the on-pace
+# dead-band; STATUSLINE_PACE_GAMMA shapes how flat the calm end stays. No overflow marker (a full
 # hot bar already means back off hard). Hidden the first ~8h.
 #
-# The horizon is the reset by default. Set PACE_WORK ("<days> <start>-<end>" local,
+# The horizon is the reset by default. Set STATUSLINE_PACE_WORK ("<days> <start>-<end>" local,
 # e.g. "Mon-Fri 09-18") to judge pace against your work schedule instead: the burn
 # rate is still measured over the real elapsed window, but "do I run dry in time?" is
 # asked against the last work-active instant at or before the reset (see pace_horizon).
 # Unlike a fixed weekday deadline this stays correct when the reset drifts mid-week —
 # a reset during work hours simply yields the reset itself. Once that work moment is
-# behind you (coasting to the reset), the meter hides. PACE_HORIZON_TS is an
+# behind you (coasting to the reset), the meter hides. STATUSLINE_PACE_HORIZON_TS is an
 # absolute-epoch override of the computed horizon (advanced / tests).
 fmt_pace() {
 	local pct=$1
@@ -373,9 +373,9 @@ fmt_pace() {
 	# the reset. A horizon at or before now means the last work moment is behind you
 	# (coasting to the reset) -> hide.
 	horizon=$reset_ts
-	if [ -n "${PACE_HORIZON_TS:-}" ]; then
-		horizon=$PACE_HORIZON_TS
-	elif [ -n "${PACE_WORK:-}" ]; then
+	if [ -n "${STATUSLINE_PACE_HORIZON_TS:-}" ]; then
+		horizon=$STATUSLINE_PACE_HORIZON_TS
+	elif [ -n "${STATUSLINE_PACE_WORK:-}" ]; then
 		h=$(pace_horizon "$now" "$reset_ts") && [ -n "$h" ] && horizon=$h
 	fi
 	[ "$horizon" -gt "$reset_ts" ] && horizon=$reset_ts
@@ -385,7 +385,7 @@ fmt_pace() {
 	# Gas-pedal urgency (permille). wall = time to hit 100% at the current rate; the
 	# side is hot when you'd hit it before the horizon, cold when after. Urgency is the
 	# fraction of the near-horizon slack you've used up, so it climbs toward the horizon.
-	w=$PACE_BAR_WIDTH
+	w=$STATUSLINE_PACE_BAR_WIDTH
 	wall=$(( (100 - pct) * elapsed / pct ))
 	if [ "$remaining" -gt "$wall" ]; then
 		hot=1; u=$(( (remaining - wall) * 1000 / remaining ))
@@ -394,7 +394,7 @@ fmt_pace() {
 	fi
 
 	# Dead-band, then gamma-shape the remainder into bar cells.
-	tolp=$(( PACE_TOL * 10 ))
+	tolp=$(( STATUSLINE_PACE_TOL * 10 ))
 	if [ "$u" -le "$tolp" ]; then
 		cells=0
 	else

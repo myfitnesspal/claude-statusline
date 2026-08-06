@@ -12,12 +12,12 @@ Custom statusline for Claude Code, displayed via the `StatuslineUpdate` hook.
 ## Important context
 
 ### Context color thresholds
-Total context is colored by absolute token count (Opus 4.6 MRCR retrieval benchmarks), NOT by compact percentage. Green < 120K, yellow 120-250K, orange 250-400K, red >= 400K. Usage is drawn as a bar (`ctx_bar`) scaled to `usable_cap = min(compact_threshold, 400000)`; a full bar is that ceiling. Overflow adds a `▶` arrowhead fused to the bar (adds one cell), gated on the red zone (>= 400K) and strictly past the ceiling — small windows peg full with no marker (their ceiling is the compact threshold, never red). Bar color inherits the token-count color, so length (proximity to ceiling) and color (retrieval quality) are independent signals. Width knobs: `CTX_BAR_WIDTH` (default 8), `PACE_BAR_WIDTH` for the 7d meter (default 8).
+Total context is colored by absolute token count (Opus 4.6 MRCR retrieval benchmarks), NOT by compact percentage. Green < 120K, yellow 120-250K, orange 250-400K, red >= 400K. Usage is drawn as a bar (`ctx_bar`) scaled to `usable_cap = min(compact_threshold, 400000)`; a full bar is that ceiling. Overflow adds a `▶` arrowhead fused to the bar (adds one cell), gated on the red zone (>= 400K) and strictly past the ceiling — small windows peg full with no marker (their ceiling is the compact threshold, never red). Bar color inherits the token-count color, so length (proximity to ceiling) and color (retrieval quality) are independent signals. Width knobs: `STATUSLINE_CTX_BAR_WIDTH` (default 8), `STATUSLINE_PACE_BAR_WIDTH` for the 7d meter (default 8).
 
 ### Auto-compact threshold
 The percentage shown is relative to whichever limit binds first: the 400K retrieval quality ceiling (red threshold) or the auto-compact trigger — `min(compact_threshold, 400000)`.
 Claude Code computes auto-compact threshold: `contextWindow - min(maxOutputTokens, 20000) - 13000`.
-We approximate as `ctx_max - 33000` (configurable via `COMPACT_OVERHEAD` env var).
+We approximate as `ctx_max - 33000` (configurable via `STATUSLINE_COMPACT_OVERHEAD` env var).
 On a 200K window, compaction (~167K) is the binding constraint. On a 1M window, the 400K quality ceiling binds.
 
 To re-derive if values change, search the binary:
