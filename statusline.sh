@@ -67,7 +67,7 @@ STATUSLINE_CTX_BAR_WIDTH="${STATUSLINE_CTX_BAR_WIDTH:-8}"
 STATUSLINE_PACE_BAR_WIDTH="${STATUSLINE_PACE_BAR_WIDTH:-8}"
 # 7d pace meter tuning. STATUSLINE_PACE_TOL is the on-pace dead-band as a percent of urgency
 # (0-100): urgency below it reads empty/on-pace. STATUSLINE_PACE_GAMMA shapes the response above
-# the band — 1 = linear, 1.5 (default) / 2 / 3 keep the low end flatter and calmer,
+# the band — 1 = linear, 1.5 (default) / 2 / 3 keep the low end flatter,
 # ramping up only as correcting gets urgent.
 STATUSLINE_PACE_TOL="${STATUSLINE_PACE_TOL:-10}"
 STATUSLINE_PACE_GAMMA="${STATUSLINE_PACE_GAMMA:-1.5}"
@@ -349,10 +349,10 @@ pace_horizon() {
 # the LEFT and escalates yellow -> orange -> red. COLD (r < 1, pressing softer -> you'd
 # reach the horizon with budget unused, lost at reset) fills from the RIGHT in blue and
 # never escalates (a milder, cliff-free cost). The fill is URGENCY = how little slack
-# is left, so it stays calm early (plenty of time to correct) and rises as the horizon
+# is left, so it stays near-empty early (plenty of time to correct) and rises as the horizon
 # nears — a steady off-pace burn is near-empty most of the week, filling only when
 # scaling back (hot) or flooring it (cold) is actually urgent. STATUSLINE_PACE_TOL is the on-pace
-# dead-band; STATUSLINE_PACE_GAMMA shapes how flat the calm end stays. No overflow marker (a full
+# dead-band; STATUSLINE_PACE_GAMMA shapes how flat the low end stays. No overflow marker (a full
 # hot bar already means back off hard). Hidden the first ~8h.
 #
 # The horizon is the reset by default. Set STATUSLINE_PACE_WORK ("<days> <start>-<end>" local,
@@ -413,10 +413,10 @@ fmt_pace() {
 	fi
 
 	if [ "$cells" -eq 0 ]; then
-		# On pace (within tolerance): calm. Hidden by default so the meter only appears
-		# when it's saying something; set STATUSLINE_PACE_SHOW_CALM=true to show the
+		# On pace (within tolerance). Hidden by default so the meter only appears
+		# when it's saying something; set STATUSLINE_PACE_SHOW_ON_PACE=true to show the
 		# empty neutral bar instead.
-		[ "${STATUSLINE_PACE_SHOW_CALM:-false}" = "true" ] && printf ' %b%b' "${NORMAL}$(bar_of 0 "$w")" "$NORMAL"
+		[ "${STATUSLINE_PACE_SHOW_ON_PACE:-false}" = "true" ] && printf ' %b%b' "${NORMAL}$(bar_of 0 "$w")" "$NORMAL"
 	elif [ "$hot" -eq 1 ]; then
 		# Too hot: fills from the left, yellow -> orange -> red by magnitude.
 		color="$YELLOW"; [ "$cells" -ge 3 ] && color="$ORANGE"; [ "$cells" -ge 6 ] && color="$RED"

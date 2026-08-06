@@ -235,10 +235,10 @@ assert_contains "STATUSLINE_CTX_BAR_WIDTH=4 yields a 4-cell bar" "$out" "█░�
 assert_not_contains "STATUSLINE_CTX_BAR_WIDTH=4 is not the default width" "$out" "██████████"
 
 # STATUSLINE_PACE_BAR_WIDTH changes the 7d pace-meter length. Half-elapsed window at
-# 50% used -> exactly on pace -> empty meter; STATUSLINE_PACE_SHOW_CALM=true forces
-# the otherwise-hidden calm bar so its width is visible.
+# 50% used -> exactly on pace -> empty meter; STATUSLINE_PACE_SHOW_ON_PACE=true forces
+# the otherwise-hidden on-pace bar so its width is visible.
 reset_state
-out=$(pace_json 50 302400 | STATUSLINE_PACE_SHOW_CALM=true STATUSLINE_PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+out=$(pace_json 50 302400 | STATUSLINE_PACE_SHOW_ON_PACE=true STATUSLINE_PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
 assert_contains "STATUSLINE_PACE_BAR_WIDTH=8 yields an 8-cell meter" "$out" "░░░░░░░░"
 
 echo ""
@@ -251,18 +251,18 @@ echo "=== 7d pace meter (gas-pedal urgency) ==="
 YEL=$'\033[33m'; ORG=$'\033[38;5;208m'; RD=$'\033[31m'; BLU=$'\033[38;5;33m'
 pace_lin(){ pace_json "$1" 302400 | STATUSLINE_PACE_GAMMA=1 STATUSLINE_PACE_BAR_WIDTH=8 bash "$STATUSLINE"; }
 
-# On pace: 50% used at half-elapsed -> r=1 -> calm -> hidden by default.
+# On pace: 50% used at half-elapsed -> r=1 -> on pace -> hidden by default.
 reset_state
 out=$(pace_lin 50 | strip_ansi)
 assert_contains "on pace: 7d percent still shown" "$out" "50%"
 assert_not_contains "on pace: meter hidden (no empty bar)" "$out" "50% ░"
 
-# STATUSLINE_PACE_SHOW_CALM=true renders the empty calm bar instead of hiding it.
+# STATUSLINE_PACE_SHOW_ON_PACE=true renders the empty on-pace bar instead of hiding it.
 reset_state
-out=$(pace_json 50 302400 | STATUSLINE_PACE_SHOW_CALM=true STATUSLINE_PACE_GAMMA=1 STATUSLINE_PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
-assert_contains "SHOW_CALM shows the empty on-pace bar" "$out" "50% ░░░░░░░░"
+out=$(pace_json 50 302400 | STATUSLINE_PACE_SHOW_ON_PACE=true STATUSLINE_PACE_GAMMA=1 STATUSLINE_PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+assert_contains "SHOW_ON_PACE shows the empty on-pace bar" "$out" "50% ░░░░░░░░"
 
-# Dead-band: 52% -> urgency ~76 permille < STATUSLINE_PACE_TOL(100) -> calm -> hidden.
+# Dead-band: 52% -> urgency ~76 permille < STATUSLINE_PACE_TOL(100) -> on pace -> hidden.
 reset_state
 out=$(pace_lin 52 | strip_ansi)
 assert_not_contains "within tolerance: meter hidden" "$out" "52% ░"
@@ -296,11 +296,11 @@ out=$(pace_lin 95 | strip_ansi)
 assert_contains "very hot: full bar" "$out" "95% ████████"
 assert_not_contains "very hot: no overflow marker" "$out" "▶"
 
-# Default gamma (1.5) exercises the integer-sqrt shaping and stays calmer: 70% used,
+# Default gamma (1.5) exercises the integer-sqrt shaping and stays lower: 70% used,
 # which is 4 cells linear, becomes 3 cells at the default curve.
 reset_state
 raw=$(pace_json 70 302400 | STATUSLINE_PACE_BAR_WIDTH=8 bash "$STATUSLINE"); out=$(printf '%s' "$raw" | strip_ansi)
-assert_contains "default gamma 1.5: 3-cell (calmer than linear's 4)" "$out" "70% ███░░░░░"
+assert_contains "default gamma 1.5: 3-cell (fewer than linear's 4)" "$out" "70% ███░░░░░"
 assert_contains "default gamma still orange" "$raw" "${ORG}███"
 
 # Higher gamma keeps the low end flatter still: 70% is 4 cells linear, 2 cells at gamma 2.
