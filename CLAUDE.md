@@ -14,9 +14,6 @@ Custom statusline for Claude Code, displayed via the `StatuslineUpdate` hook.
 ### Context color thresholds
 Total context is colored by absolute token count (Opus 4.6 MRCR retrieval benchmarks), NOT by compact percentage. Green < 120K, yellow 120-250K, orange 250-400K, red >= 400K. The compact percentage is still displayed as informational text.
 
-### Two degradation axes
-Token volume degrades retrieval (colored on the token count). User message count degrades multi-turn reliability (colored separately). These are independent — no interaction formula.
-
 ### Auto-compact threshold
 The percentage shown is relative to whichever limit binds first: the 400K retrieval quality ceiling (red threshold) or the auto-compact trigger — `min(compact_threshold, 400000)`.
 Claude Code computes auto-compact threshold: `contextWindow - min(maxOutputTokens, 20000) - 13000`.

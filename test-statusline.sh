@@ -221,55 +221,26 @@ raw=$(run_raw 0 0 400000 200 1000000)
 assert_contains "ctx == 400K is red" "$raw" $'\033[31m400k'
 
 echo ""
-echo "=== Message count ==="
+echo "=== Message count removed ==="
 
-# No messages yet: msg should be hidden
+# Message count is no longer displayed, even across round resets.
 reset_state
 out=$(run 100 500 10000 200 200000)
-assert_not_contains "zero messages hidden" "$out" "msg"
+assert_not_contains "no msg on first call" "$out" "msg"
 
-# After 1 round reset: 1msg shown
 echo "reset" > "/tmp/claude-statusline-newround-${SESSION}"
 out=$(run 100 500 10000 200 200000)
-assert_contains "1 message shown" "$out" "1msg"
+assert_not_contains "no msg after 1 round reset" "$out" "msg"
 
-# After another round reset: 2msg
 echo "reset" > "/tmp/claude-statusline-newround-${SESSION}"
 out=$(run 100 500 10000 200 200000)
-assert_contains "messages accumulate" "$out" "2msg"
+assert_not_contains "no msg after 2 round resets" "$out" "msg"
 
-# Calls within same round don't increment
-out=$(run 100 500 10000 200 200000)
-assert_contains "same round stays at 2msg" "$out" "2msg"
-
-echo ""
-echo "=== Message count colors ==="
-
-# State format v2: 2|round_start_cost|msg_count|last_ts
-
-# Green: 5 messages
-reset_state
-echo "2|1.50|5|0" > "/tmp/claude-statusline-${SESSION}"
-raw=$(run_raw 100 500 10000 200 200000)
-assert_contains "5msg is green" "$raw" $'\033[32m5msg'
-
-# Yellow: 10 messages (boundary)
-reset_state
-echo "2|1.50|10|0" > "/tmp/claude-statusline-${SESSION}"
-raw=$(run_raw 100 500 10000 200 200000)
-assert_contains "10msg is yellow" "$raw" $'\033[33m10msg'
-
-# Orange: 18 messages (boundary)
-reset_state
-echo "2|1.50|18|0" > "/tmp/claude-statusline-${SESSION}"
-raw=$(run_raw 100 500 10000 200 200000)
-assert_contains "18msg is orange" "$raw" $'\033[38;5;208m18msg'
-
-# Red: 24 messages (boundary)
+# Legacy v2 state carrying a high message count still shows nothing.
 reset_state
 echo "2|1.50|24|0" > "/tmp/claude-statusline-${SESSION}"
-raw=$(run_raw 100 500 10000 200 200000)
-assert_contains "24msg is red" "$raw" $'\033[31m24msg'
+out=$(run 100 500 10000 200 200000)
+assert_not_contains "legacy v2 msg count not rendered" "$out" "msg"
 
 echo ""
 echo "=== Cache age timer ==="
@@ -380,15 +351,20 @@ out=$(run 100 500 10000 200 200000 1.50 3661000)
 assert_contains "API time hours+minutes" "$out" "1h1m"
 
 echo ""
-echo "=== State format v2 migration ==="
+echo "=== State format migration ==="
 
 # Old v1 state file (5 fields, no version prefix) should be ignored
 reset_state
 echo "10600|26000|1.50|11000|12200" > "/tmp/claude-statusline-${SESSION}"
 out=$(run 100 500 10000 200 200000 1.50)
-# Should reset to defaults: round_start_cost=$cost (1.50), msg_count=0
+# Should reset to defaults: round_start_cost=$cost (1.50)
 assert_contains "v1 state: round cost resets" "$out" "+\$0.00"
-assert_not_contains "v1 state: no msg shown" "$out" "msg"
+
+# Legacy v2 state (2|cost|msg|ts) still yields its round cost after upgrade
+reset_state
+echo "2|1.20|7|0" > "/tmp/claude-statusline-${SESSION}"
+out=$(run 100 500 10000 200 200000 1.50)
+assert_contains "v2 state: round cost from field 2" "$out" "+\$0.30"
 
 echo ""
 echo "=== Auth mode indicator ==="

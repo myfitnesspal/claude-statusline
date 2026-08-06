@@ -28,10 +28,9 @@ O4.6 200k | 34k 17% · 12msg · 7m | 2h14m 11% · 3d5h 12% | 19m +$0.05 $0.67
 - Subagent governance status shown only when subagent hooks are installed
 
 ### Section 2: Context health
-`34k 17% · 12msg · 7m`
+`34k 17% · 7m`
 
 - **Total context**: absolute token count colored by retrieval quality thresholds, plus usage percentage relative to whichever limit binds first: the 400K retrieval quality ceiling or the auto-compact threshold (whichever is smaller)
-- **Message count**: user messages in session, colored by multi-turn degradation thresholds. Hidden when 0.
 - **Cache age**: time since last API call, predicts whether prompt cache is warm. Hidden when < 3 minutes (cache warm). Shown yellow at 3-5 minutes (at risk), red > 5 minutes (cold, ~5 minute TTL expired).
 - Output tokens are NOT shown — they aren't in context yet (will fold in on next call)
 
@@ -55,8 +54,8 @@ O4.6 200k | 34k 17% · 12msg · 7m | 2h14m 11% · 3d5h 12% | 19m +$0.05 $0.67
 ### Context colored by absolute token thresholds, not compact percentage
 The compact percentage tells you when auto-compact fires, but says nothing about retrieval quality. Research (MRCR v2 benchmarks, practitioner needle tests) shows retrieval degrades at specific absolute token thresholds regardless of window size. A 200K session on a 1M window has the same retrieval quality as 200K on a 200K window. The compact percentage is still displayed as informational text.
 
-### Two independent degradation axes
-Token volume degrades retrieval accuracy (attention dilution, "lost in the middle" effect). User message count degrades reliability through a different mechanism (accumulated assumptions, wrong-turn lock-in). Research shows 39% average performance drop in multi-turn vs single-turn. These are displayed as separate colored indicators with no interaction formula.
+### Message count removed
+An earlier version showed a colored user-message count as a second degradation axis (multi-turn reliability decay). It was dropped: the number wasn't actionable in practice — token volume already carries the "how loaded is this session" signal, and message count added a competing indicator without changing what the user does about it. The per-round cost reset still keys off the same `UserPromptSubmit` marker; only the display and its state field were removed.
 
 ### Per-round input delta removed
 Per-round input size is not an independent degradation factor. A single turn loading 80K from file reads is healthier than four 20K turns of conversational refinement. What matters is cumulative total tokens and conversational structure, not per-turn volume.
@@ -65,7 +64,7 @@ Per-round input size is not an independent degradation factor. A single turn loa
 A session-averaged cache hit percentage isn't actionable. What matters is whether the cache is warm right now, which predicts whether the next message will be fast and cheap or slow and expensive. The ~5 minute TTL means a simple timer since the last API call is the most predictive signal.
 
 ### Round boundaries are set by UserPromptSubmit hook
-`round-reset.sh` creates a marker file on each user prompt. The statusline increments the message counter and resets round cost when it sees this marker.
+`round-reset.sh` creates a marker file on each user prompt. The statusline resets round cost when it sees this marker.
 
 ### Output tokens are not displayed
 Output tokens from the current call aren't in `ctx_tokens` yet — they fold into input on the next call.
@@ -75,7 +74,6 @@ Output tokens from the current call aren't in `ctx_tokens` yet — they fold int
 | Field | Green | Yellow | Orange | Red |
 |-------|-------|--------|--------|-----|
 | Context total (tokens) | < 120K | 120-250K | 250-400K | >= 400K |
-| Message count | 0-9 | 10-17 | 18-23 | >= 24 |
 | Cache age | < 3m (hidden) | 3-5m | — | > 5m |
 | Rate limits | < 50% | 50-79% | — | >= 80% |
 
@@ -84,9 +82,6 @@ Output tokens from the current call aren't in `ctx_tokens` yet — they fold int
 - **Yellow (120-250K)**: 93% MRCR. Proactive `/compact` with task-focused instructions worth considering.
 - **Orange (250-400K)**: Single-needle retrieval still good, multi-needle starts degrading. Consider starting fresh if context is conversational rather than document-loaded.
 - **Red (>= 400K)**: Partial retrieval. Details get hallucinated. Start fresh unless deep debugging where losing context is worse.
-
-### Message count threshold rationale
-Narrowing intervals (10, 8, 6) because multi-turn degradation compounds. Based on Microsoft/Salesforce study (Laban et al., May 2025) testing 15 LLMs across 200K+ conversations.
 
 ## Available JSON Fields
 
@@ -134,9 +129,10 @@ From the `StatuslineUpdate` hook payload (dumped via `jq . > /tmp/debug.json`):
 ## State Management
 
 State file: `/tmp/claude-statusline-{session_id}`
-Format (v2): `2|round_start_cost|msg_count|last_ts`
+Format (v3): `3|round_start_cost|last_ts`
 
-- Version prefix `2` distinguishes from old format; old state files are reset on read.
+- Version prefix distinguishes formats; unrecognized/old state files are reset on read.
+- Legacy v2 (`2|round_start_cost|msg_count|last_ts`) is still read for graceful in-session upgrade; the dropped message count sat between `round_start_cost` and `last_ts`.
 - `last_ts` is the epoch timestamp of the last statusline render, used to compute cache age.
 
 New-round marker: `/tmp/claude-statusline-newround-{session_id}`

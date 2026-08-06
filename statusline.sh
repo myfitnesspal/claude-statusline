@@ -4,8 +4,6 @@
 #
 # Context total colored by absolute token thresholds (retrieval quality):
 #   green < 120K, yellow 120-250K, orange 250-400K, red >= 400K
-# Message count colored by multi-turn degradation thresholds:
-#   green < 10, yellow 10-17, orange 18-23, red >= 24
 # Cache age shown when >= 3 minutes since last API call (yellow 3-5m, red > 5m)
 #
 # Requires: jq
@@ -74,23 +72,25 @@ fmt_tokens() {
 	fi
 }
 
-# State format v2: version|round_start_cost|msg_count|last_ts
+# State format v3: version|round_start_cost|last_ts
+# Legacy v2 (version|round_start_cost|msg_count|last_ts) is still read; the
+# dropped message count sat between round_start_cost and last_ts.
 round_start_cost=$cost
-msg_count=0
 last_ts=0
 if [ -f "$STATE_FILE" ]; then
-	IFS='|' read -r _ver _rsc _mc _lt < "$STATE_FILE"
-	if [ "$_ver" = "2" ]; then
+	IFS='|' read -r _ver _rsc _f2 _f3 < "$STATE_FILE"
+	if [ "$_ver" = "3" ]; then
 		round_start_cost=$_rsc
-		msg_count=${_mc:-0}
-		last_ts=${_lt:-0}
+		last_ts=${_f2:-0}
+	elif [ "$_ver" = "2" ]; then
+		round_start_cost=$_rsc
+		last_ts=${_f3:-0}
 	fi
 fi
 
 # If UserPromptSubmit hook signaled a new round, reset round metrics
 if [ -f "$NEWROUND_FILE" ]; then
 	round_start_cost=$cost
-	msg_count=$((msg_count + 1))
 	rm -f "$NEWROUND_FILE"
 fi
 
@@ -102,7 +102,7 @@ if [ "$last_ts" -gt 0 ]; then
 fi
 
 # Save state
-echo "2|${round_start_cost}|${msg_count}|${now}" > "$STATE_FILE"
+echo "3|${round_start_cost}|${now}" > "$STATE_FILE"
 
 # Usage snapshot for programmatic reads (agent self-throttling). Authoritative rate-limit
 # fields come straight from Claude Code's statusline input; persisted here each render so a
@@ -270,21 +270,6 @@ if [ -f "$HOME/src/claude-config/hooks/subagent-status.sh" ]; then
 	fi
 fi
 
-# Message count color (multi-turn degradation)
-if [ "$msg_count" -ge 24 ]; then
-	msg_color="$RED"
-elif [ "$msg_count" -ge 18 ]; then
-	msg_color="$ORANGE"
-elif [ "$msg_count" -ge 10 ]; then
-	msg_color="$YELLOW"
-else
-	msg_color="$GREEN"
-fi
-msg_part=""
-if [ "$msg_count" -gt 0 ]; then
-	msg_part=" · ${msg_color}${msg_count}msg${NORMAL}"
-fi
-
 # Cache age indicator (hidden when warm < 3 minutes)
 cache_part=""
 if [ "$cache_age" -ge 300 ]; then
@@ -298,7 +283,7 @@ parts="${NORMAL}${short_model}"
 [ -n "$location" ] && parts="${parts} ${location}"
 [ -n "$sa_status" ] && parts="${parts} ${sa_status}${NORMAL}"
 parts="${parts} |"
-parts="${parts} ${ctx_color}$(fmt_tokens "$ctx_tokens") ${compact_pct}%${NORMAL}${msg_part}${cache_part}"
+parts="${parts} ${ctx_color}$(fmt_tokens "$ctx_tokens") ${compact_pct}%${NORMAL}${cache_part}"
 api_secs=$((api_ms / 1000))
 round_cost=$(awk "BEGIN {printf \"%.2f\", $cost - $round_start_cost}")
 cost_fmt=$(printf '%s +$%s $%.2f' "$(fmt_duration "$api_secs")" "$round_cost" "$cost")
