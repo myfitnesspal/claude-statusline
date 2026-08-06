@@ -27,7 +27,9 @@ Context is colored by **absolute token count** (retrieval quality degrades at fi
 
 | Section | Green | Yellow | Orange | Red |
 |---------|-------|--------|--------|-----|
-| Context tokens | < 120K | 120–250K | 250–400K | ≥ 400K |
+| Context tokens | < 120K | 120–250K | 250–400K¹ | ≥ 400K |
+
+¹ On 1M-context models, orange also starts at ~200K — the long-context **premium pricing** cliff (`exceeds_200k_tokens`) — and runs through to red, so orange means "premium pricing and/or retrieval degrading." 200K-window sessions never trigger it.
 | Rate limits | < 50% | 50–79% | — | ≥ 80% |
 
 ## Requirements

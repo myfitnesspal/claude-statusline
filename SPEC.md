@@ -30,7 +30,7 @@ O4.6 200k | 34k 17% · 12msg · 7m | 2h14m 11% · 3d5h 12% | 19m +$0.05 $0.67
 ### Section 2: Context health
 `34k █████░░░`
 
-- **Total context**: absolute token count colored by retrieval quality thresholds, followed by a **usage bar**. The bar fills to `usable_cap = min(compact_threshold, 400000)` — a full bar is that ceiling (the 400K retrieval red line, or the auto-compact threshold when it binds first). The bar inherits the token-count color (green < 120K, yellow 120-250K, orange 250-400K, red >= 400K). Overflow marker: a `▶` arrowhead fused to the bar (adds one cell, reading as the bar continuing off-scale), shown only in the **red zone** (>= 400K) and strictly past the ceiling. On a small window the ceiling is the compact threshold (below 400K, so red is unreachable) — the bar just pegs full with no marker, since auto-compact self-heals. Width is `STATUSLINE_CTX_BAR_WIDTH` cells (default 8).
+- **Total context**: absolute token count colored by retrieval quality thresholds, followed by a **usage bar**. The bar fills to `usable_cap = min(compact_threshold, 400000)` — a full bar is that ceiling (the 400K retrieval red line, or the auto-compact threshold when it binds first). The bar inherits the token-count color (green < 120K, yellow 120-250K, orange 250-400K, red >= 400K) — except **orange also starts at the long-context pricing cliff**: Claude Code's `exceeds_200k_tokens` flag (premium pricing above 200K on 1M-context models) colors the bar orange from the cliff through to red, so orange means "premium pricing and/or retrieval degrading." Overflow marker: a `▶` arrowhead fused to the bar (adds one cell, reading as the bar continuing off-scale), shown only in the **red zone** (>= 400K) and strictly past the ceiling. On a small window the ceiling is the compact threshold (below 400K, so red is unreachable) — the bar just pegs full with no marker, since auto-compact self-heals. Width is `STATUSLINE_CTX_BAR_WIDTH` cells (default 8).
 - Output tokens are NOT shown — they aren't in context yet (will fold in on next call)
 
 ### Section 3: Rate limits
@@ -75,7 +75,7 @@ Output tokens from the current call aren't in `ctx_tokens` yet — they fold int
 
 | Field | Green | Yellow | Orange | Red |
 |-------|-------|--------|--------|-----|
-| Context total (tokens) | < 120K | 120-250K | 250-400K | >= 400K |
+| Context total (tokens) | < 120K | 120-250K | 250-400K (or ≥ 200K premium) | >= 400K |
 | Rate limits | < 50% | 50-79% | — | >= 80% |
 
 ### Context threshold rationale

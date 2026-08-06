@@ -26,12 +26,14 @@ while IFS= read -r _line; do _f[$((_i++))]=$_line; done < <(echo "$input" | jq -
 	(.cost.total_cost_usd // 0),
 	(($u.input_tokens // 0) + ($u.cache_creation_input_tokens // 0) + ($u.cache_read_input_tokens // 0)),
 	(.context_window.context_window_size // 0),
-	(.cost.total_api_duration_ms // 0)
+	(.cost.total_api_duration_ms // 0),
+	(.exceeds_200k_tokens // false)
 ')
 session_id=${_f[0]}  model=${_f[1]}  cwd=${_f[2]}  project_dir=${_f[3]}
 agent_name=${_f[4]}  worktree_name=${_f[5]}
 limit_5h=${_f[6]}  limit_5h_reset=${_f[7]}  limit_7d=${_f[8]}  limit_7d_reset=${_f[9]}
 cost=${_f[10]}  ctx_tokens=${_f[11]}  ctx_max=${_f[12]}  api_ms=${_f[13]}
+exceeds_200k=${_f[14]}
 STATE_FILE="/tmp/claude-statusline-${session_id}"
 NEWROUND_FILE="/tmp/claude-statusline-newround-${session_id}"
 
@@ -150,12 +152,17 @@ usage_json=$(printf '{"five_hour_pct":%s,"five_hour_reset":"%s","seven_day_pct":
 printf '%s\n' "$usage_json" > "/tmp/claude-usage-${session_id}.json" 2>/dev/null
 printf '%s\n' "$usage_json" >> "$HOME/.claude-statusline/usage-history.jsonl" 2>/dev/null
 
-# Color for total context: absolute token thresholds (retrieval quality)
+# Color for total context: absolute token thresholds (retrieval quality), plus the
+# long-context pricing cliff. Orange normally marks retrieval degradation (>=250K),
+# but Claude Code's exceeds_200k_tokens flag (premium long-context pricing kicks in
+# above 200K on 1M-context models) starts orange earlier, at the cliff, and it runs
+# through to the red retrieval catastrophe (>=400K). The flag can't be true on a
+# 200K-window session (context can't exceed the window), so those are unaffected.
 usable_cap=$((compact_threshold < 400000 ? compact_threshold : 400000))
 compact_pct=$((ctx_tokens * 100 / usable_cap))
 if [ "$ctx_tokens" -ge 400000 ]; then
 	ctx_color="$RED"
-elif [ "$ctx_tokens" -ge 250000 ]; then
+elif [ "$exceeds_200k" = "true" ] || [ "$ctx_tokens" -ge 250000 ]; then
 	ctx_color="$ORANGE"
 elif [ "$ctx_tokens" -ge 120000 ]; then
 	ctx_color="$YELLOW"

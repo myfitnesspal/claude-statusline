@@ -50,12 +50,14 @@ mock_json() {
 	local context_window_size=${5:-200000}
 	local cost=${6:-1.50}
 	local api_duration_ms=${7:-60000}
+	local exceeds_200k=${8:-false}
 	cat <<EOF
 {
   "session_id": "${SESSION}",
   "model": { "id": "claude-opus-4-6", "display_name": "Opus 4.6 (1M context)" },
   "workspace": { "current_dir": "/tmp/test", "project_dir": "/tmp/test", "added_dirs": [] },
   "cost": { "total_cost_usd": ${cost}, "total_duration_ms": 100000, "total_api_duration_ms": ${api_duration_ms} },
+  "exceeds_200k_tokens": ${exceeds_200k},
   "context_window": {
     "total_input_tokens": 50000,
     "total_output_tokens": 10000,
@@ -401,6 +403,38 @@ assert_contains "ctx == 250K is orange" "$raw" $'\033[38;5;208m250k'
 reset_state
 raw=$(run_raw 0 0 400000 200 1000000)
 assert_contains "ctx == 400K is red" "$raw" $'\033[31m400k'
+
+echo ""
+echo "=== Long-context premium (>200K) colors orange ==="
+
+# The exceeds_200k_tokens flag (Claude Code's long-context pricing boundary) starts
+# orange at the premium cliff instead of waiting for the 250K retrieval threshold.
+# 220K on a 1M window: yellow by retrieval, but orange once premium pricing applies.
+reset_state
+raw=$(run_raw 220000 0 0 200 1000000 1.50 60000 false)
+assert_contains "220K without the flag is yellow" "$raw" $'\033[33m220k'
+reset_state
+raw=$(run_raw 220000 0 0 200 1000000 1.50 60000 true)
+assert_contains "220K with premium flag is orange" "$raw" $'\033[38;5;208m220k'
+
+# Orange stays through to red: 300K is orange either way, 450K is red regardless.
+reset_state
+raw=$(run_raw 300000 0 0 200 1000000 1.50 60000 true)
+assert_contains "300K premium: orange" "$raw" $'\033[38;5;208m300k'
+reset_state
+raw=$(run_raw 450000 0 0 200 1000000 1.50 60000 true)
+assert_contains "450K stays red even with premium flag" "$raw" $'\033[31m450k'
+
+# Fallback: with no flag, the 250K retrieval threshold still colors orange.
+reset_state
+raw=$(run_raw 300000 0 0 200 1000000 1.50 60000 false)
+assert_contains "300K without flag: orange by retrieval threshold" "$raw" $'\033[38;5;208m300k'
+
+# 200K-window sessions are unaffected: the flag can't be true (context can't exceed
+# the window), so coloring stays green/yellow by retrieval.
+reset_state
+raw=$(run_raw 150000 0 0 200 200000 1.50 60000 false)
+assert_contains "150K on a 200K window is yellow (unchanged)" "$raw" $'\033[33m150k'
 
 echo ""
 echo "=== Message count removed ==="
