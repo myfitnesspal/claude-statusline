@@ -83,6 +83,15 @@ run_raw() {
 	mock_json "$@" | bash "$STATUSLINE"
 }
 
+# Build a rate-limit payload for pace-meter tests: 5h at 40% (resets in 1h), and
+# 7d at $1% resetting in $2 seconds. Elapsed = 604800 - $2, so the burn-rate
+# extrapolation is deterministic.
+pace_json() {
+	local pct7=$1 reset_off=$2 now r5 r7
+	now=$(date +%s); r5=$((now + 3600)); r7=$((now + reset_off))
+	printf '{"session_id":"%s","model":{"display_name":"Opus 4.6 (1M context)"},"workspace":{"current_dir":"/x","project_dir":"/x"},"cost":{"total_cost_usd":1.50,"total_api_duration_ms":60000},"context_window":{"current_usage":{"input_tokens":10000},"context_window_size":1000000},"rate_limits":{"five_hour":{"used_percentage":40,"resets_at":%s},"seven_day":{"used_percentage":%s,"resets_at":%s}}}' "$SESSION" "$r5" "$pct7" "$r7"
+}
+
 assert_contains() {
 	local desc="$1" output="$2" expected="$3"
 	if echo "$output" | grep -qF "$expected"; then
@@ -223,13 +232,60 @@ out=$(CTX_BAR_WIDTH=4 run 130000 0 0 0 1000000)
 assert_contains "CTX_BAR_WIDTH=4 yields a 4-cell bar" "$out" "█░░░"
 assert_not_contains "CTX_BAR_WIDTH=4 is not the default width" "$out" "██████████"
 
-# PACE_BAR_WIDTH changes the 7d throttle-meter length. Build a payload with 5h+7d
-# limits, window half-elapsed at 50% used -> on pace -> empty meter of the given width.
+# PACE_BAR_WIDTH changes the 7d throttle-meter length. Half-elapsed window at 50%
+# used -> exactly on pace -> empty meter of the given width.
 reset_state
-_now=$(date +%s); _r5=$((_now + 3600)); _r7=$((_now + 302400))
-_pace_json='{"session_id":"'"${SESSION}"'","model":{"display_name":"Opus 4.6 (1M context)"},"workspace":{"current_dir":"/x","project_dir":"/x"},"cost":{"total_cost_usd":1.50,"total_api_duration_ms":60000},"context_window":{"current_usage":{"input_tokens":10000},"context_window_size":1000000},"rate_limits":{"five_hour":{"used_percentage":40,"resets_at":'"${_r5}"'},"seven_day":{"used_percentage":50,"resets_at":'"${_r7}"'}}}'
-out=$(echo "$_pace_json" | PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+out=$(pace_json 50 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
 assert_contains "PACE_BAR_WIDTH=8 yields an 8-cell meter" "$out" "░░░░░░░░"
+
+echo ""
+echo "=== 7d pace deadline (PACE_DEADLINE) ==="
+
+# Scenario: 7d window half-elapsed (302400s left), 70% used. At that average rate
+# the wall is 129600s out. Judged against the reset (302400s) that's ~heat 58 -> a
+# red, mostly-full meter. PACE_DEADLINE (or its absolute-epoch form PACE_DEADLINE_TS)
+# judges pace against an earlier work-week deadline instead, capped at the reset.
+
+# No deadline: judged to reset -> red 5-cell meter.
+reset_state
+raw=$(pace_json 70 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE")
+out=$(printf '%s' "$raw" | strip_ansi)
+assert_contains "no deadline: 5-cell meter" "$out" "70% █████░░░"
+assert_contains "no deadline: meter is red" "$raw" $'\033[31m █████░░░'
+
+# Deadline sooner than the wall (120000s < 129600s): you finish before you'd wall
+# -> made it -> empty meter.
+reset_state
+_now=$(date +%s)
+out=$(pace_json 70 302400 | PACE_DEADLINE_TS=$((_now + 120000)) PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+assert_contains "deadline before wall: empty meter (made it)" "$out" "70% ░░░░░░░░"
+
+# Deadline later than the wall but before reset (200000s): still exposed, but cooler
+# than judging to the full reset -> yellow 3-cell meter.
+reset_state
+_now=$(date +%s)
+raw=$(pace_json 70 302400 | PACE_DEADLINE_TS=$((_now + 200000)) PACE_BAR_WIDTH=8 bash "$STATUSLINE")
+out=$(printf '%s' "$raw" | strip_ansi)
+assert_contains "deadline eases the meter: 3-cell" "$out" "70% ███░░░░░"
+assert_contains "eased meter is yellow" "$raw" $'\033[33m ███░░░░░'
+
+# Deadline past the reset (coasting to reset): no work-end before reset -> meter hidden.
+reset_state
+_now=$(date +%s)
+out=$(pace_json 70 302400 | PACE_DEADLINE_TS=$((_now + 400000)) PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+assert_contains "coasting: 7d percent still shown" "$out" "70%"
+assert_not_contains "coasting: pace meter hidden" "$out" "70% █"
+assert_not_contains "coasting: no empty meter either" "$out" "70% ░"
+
+# Malformed PACE_DEADLINE falls back to judging against the reset (no crash).
+reset_state
+out=$(pace_json 70 302400 | PACE_DEADLINE="not a day" PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+assert_contains "bad PACE_DEADLINE falls back to reset" "$out" "70% █████░░░"
+
+# A well-formed PACE_DEADLINE renders without error (day/time actually parses).
+reset_state
+out=$(pace_json 70 302400 | PACE_DEADLINE="Fri 18:00" PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+assert_contains "valid PACE_DEADLINE still renders the 7d limit" "$out" "70%"
 
 echo ""
 echo "=== Context total color thresholds ==="

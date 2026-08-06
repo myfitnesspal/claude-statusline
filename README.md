@@ -76,12 +76,19 @@ Without this hook, `+$` accumulates across the whole session.
 
 ## Customization
 
-Configure via environment variables (set them in the `command` or your shell):
+Configure via environment variables. The cleanest place is the `env` block in `settings.json` (Claude Code injects it into the statusline subprocess — no shell-profile edits needed), scoped to whichever settings file fits (`~/.claude/settings.json` for all sessions, or a project's `.claude/settings.local.json`):
+
+```json
+{
+  "env": { "PACE_DEADLINE": "Fri 18:00" }
+}
+```
 
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `CTX_BAR_WIDTH` | 8 | Cells in the context usage bar. |
 | `PACE_BAR_WIDTH` | 8 | Cells in the 7-day burn-pace meter. |
+| `PACE_DEADLINE` | — | Weekly deadline `"Ddd HH:MM"` local (e.g. `"Fri 18:00"`). The pace meter judges "will I run dry in time?" against this instead of the account reset — useful for a work account you only run Mon–Fri. It still warns if you'd run dry before the deadline, but stops penalizing you for the weekend you won't use; once past the deadline it hides until reset. |
 | `COMPACT_OVERHEAD` | 33000 | Tokens subtracted from the window to approximate the auto-compact threshold. |
 | `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | — | If set (e.g. `75`), treats auto-compact as that percent of the window; wins over `COMPACT_OVERHEAD`. |
 

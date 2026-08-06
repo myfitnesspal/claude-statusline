@@ -155,4 +155,14 @@ Approximated as `ctx_max - 33000`. Override with `COMPACT_OVERHEAD` env var.
 | `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | unset | If set (e.g. 75), treats the auto-compact threshold as that percent of the window; wins over `COMPACT_OVERHEAD`. |
 | `CTX_BAR_WIDTH` | 8 | Cells in the context usage bar. |
 | `PACE_BAR_WIDTH` | 8 | Cells in the 7d throttle meter. |
+| `PACE_DEADLINE` | unset | Weekly work-week deadline (`"Ddd HH:MM"` local, e.g. `"Fri 18:00"`). The 7d pace meter judges "will I run dry in time" against this instead of the reset (see below). Unset = judge to the reset. |
+| `PACE_DEADLINE_TS` | unset | Absolute-epoch override of the computed deadline (advanced / tests). Takes precedence over `PACE_DEADLINE`. |
 | `CLAUDE_JSON_PATH` | `~/.claude.json` | Credential file the auth/plan letter reads (tests point it at fixtures). |
+
+### 7d pace deadline
+
+The 7d throttle meter asks "at my current average burn, do I run dry before I stop needing the budget?" By default that horizon is the account reset. But a work account only needs to last through the work week — the weekend before the reset is free time you won't spend, so judging pace all the way to a Sunday reset over-penalizes you.
+
+`PACE_DEADLINE` moves the horizon to your weekly work-week end (e.g. `"Fri 18:00"`, local). The burn *rate* is still measured over the real elapsed window; only the "do I make it in time?" comparison uses the deadline, capped at the reset (`horizon = min(reset, next deadline)`). Effect: mid-week while burning hot it still warns (you'd wall before Friday), but later in the week it relaxes correctly (if you'd only wall Saturday, you've made it). Once you're past this week's deadline — coasting to the reset with no more work — the meter hides.
+
+It's expressed as an absolute weekday+time rather than an offset from the reset because the weekly reset is not a stable wall-clock time (it drifts with the billing cycle); an offset would silently point at the wrong day in a week the reset moves, whereas an absolute deadline is computed independently. The computation is pure arithmetic on the current wall clock (`date +%u/%H/%M/%S`) with no date-string parsing, so it is macOS/Linux portable; DST day-length shifts are ignored (a ~1h error twice a year, immaterial to pace).

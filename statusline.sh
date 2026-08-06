@@ -215,27 +215,86 @@ else
 	fi
 fi
 
+# Next occurrence (epoch) of the weekly PACE_DEADLINE ("Ddd HH:MM" local, e.g.
+# "Fri 18:00") strictly after $1 (now). Pure arithmetic on the current wall clock
+# (date +%u/%H/%M/%S) — no date-string parsing, so it is macOS/Linux portable. DST
+# day-length shifts are ignored (a ~1h error twice a year, immaterial to pace).
+# Echoes nothing and returns 1 on malformed input.
+pace_deadline_ts() {
+	local now=$1 spec day hm th tm target_dow target_secs cur_dow cur_secs day_delta
+	spec="${PACE_DEADLINE}"
+	day="${spec%% *}"
+	hm="${spec#* }"; hm="${hm// /}"
+	case "$(printf '%s' "$day" | tr 'A-Z' 'a-z')" in
+		mon*) target_dow=1 ;;
+		tue*) target_dow=2 ;;
+		wed*) target_dow=3 ;;
+		thu*) target_dow=4 ;;
+		fri*) target_dow=5 ;;
+		sat*) target_dow=6 ;;
+		sun*) target_dow=7 ;;
+		*) return 1 ;;
+	esac
+	case "$hm" in
+		*:*) th="${hm%%:*}"; tm="${hm##*:}" ;;
+		*)   th="$hm"; tm=0 ;;
+	esac
+	case "${th}${tm}" in ''|*[!0-9]*) return 1 ;; esac
+	target_secs=$(( 10#$th * 3600 + 10#$tm * 60 ))
+	[ "$target_secs" -ge 86400 ] && return 1
+	cur_dow=$(date +%u)
+	cur_secs=$(( 10#$(date +%H) * 3600 + 10#$(date +%M) * 60 + 10#$(date +%S) ))
+	day_delta=$(( (target_dow - cur_dow + 7) % 7 ))
+	if [ "$day_delta" -eq 0 ] && [ "$target_secs" -le "$cur_secs" ]; then
+		day_delta=7
+	fi
+	printf '%s' "$(( now - cur_secs + day_delta * 86400 + target_secs ))"
+}
+
 # 7d throttle meter, appended to the 7d limit — a bounded heat bar. EMPTY = your
-# current average burn still reaches reset (sustainable, all good); it FILLS as you'd
-# wall earlier; FULL = walling now. Ease off (or get 5h-blocked) and it drains as the
-# clock catches up to your usage. Non-linear by design (heat = 100 - runway, and
-# runway = time-to-wall / time-left is hyperbolic): near-empty while you have days of
-# runway, climbing fast only as the wall approaches. Grey when cool, yellow warming,
-# red when >half full or >=90% used. Hidden the window's first ~8h.
+# current average burn still reaches the horizon (sustainable, all good); it FILLS as
+# you'd wall earlier; FULL = walling now. Ease off (or get 5h-blocked) and it drains
+# as the clock catches up to your usage. Non-linear by design (heat = 100 - runway,
+# and runway = time-to-wall / time-left is hyperbolic): near-empty while you have days
+# of runway, climbing fast only as the wall approaches. Grey when cool, yellow
+# warming, red when >half full or >=90% used. Hidden the window's first ~8h.
+#
+# The horizon is the reset by default. Set PACE_DEADLINE ("Ddd HH:MM" local, e.g.
+# "Fri 18:00") to judge pace against a weekly work-week deadline instead — the burn
+# rate is still measured over the real elapsed window, but "do I run dry in time" is
+# asked against the deadline (capped at the reset). Past this week's deadline, with
+# only the coast to the reset left, the meter hides. PACE_DEADLINE_TS is an
+# absolute-epoch override of the computed deadline (advanced / tests).
 fmt_pace() {
 	local pct=$1
 	local reset_ts=$2
 	[ -z "$pct" ] && return
 	[ -z "$reset_ts" ] && return
 	[ "$pct" -le 0 ] && return
-	local now window remaining elapsed wall runway heat cells filled bar color
+	local now window remaining_reset elapsed horizon deadline_ts remaining wall runway heat cells filled bar color
 	now=$(date +%s)
 	window=604800
-	remaining=$((reset_ts - now))
-	[ "$remaining" -le 0 ] && return
-	[ "$remaining" -gt "$window" ] && remaining=$window
-	elapsed=$((window - remaining))
+	remaining_reset=$((reset_ts - now))
+	[ "$remaining_reset" -le 0 ] && return
+	[ "$remaining_reset" -gt "$window" ] && remaining_reset=$window
+	elapsed=$((window - remaining_reset))
 	[ "$elapsed" -lt $((window / 20)) ] && return   # <~8.4h in: not enough to extrapolate
+
+	# Effective horizon: the work-week deadline if set (capped at reset), else the reset.
+	horizon=$reset_ts
+	deadline_ts=""
+	if [ -n "${PACE_DEADLINE_TS:-}" ]; then
+		deadline_ts=$PACE_DEADLINE_TS
+	elif [ -n "${PACE_DEADLINE:-}" ]; then
+		deadline_ts=$(pace_deadline_ts "$now")
+	fi
+	if [ -n "$deadline_ts" ]; then
+		[ "$deadline_ts" -gt "$reset_ts" ] && return   # no work-end before reset -> coasting
+		horizon=$deadline_ts
+	fi
+	remaining=$((horizon - now))
+	[ "$remaining" -le 0 ] && return
+
 	wall=$(( (100 - pct) * elapsed / pct ))          # secs until used%=100 at avg rate
 	runway=$(( 100 * wall / remaining ))
 	[ "$runway" -gt 100 ] && runway=100
