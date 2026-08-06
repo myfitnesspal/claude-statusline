@@ -1,34 +1,39 @@
 # claude-statusline
 
-A compact status bar for [Claude Code](https://claude.ai/code) that shows per-round token usage, context health, and session cost.
+A compact status bar for [Claude Code](https://claude.ai/code) that shows model, context health, rate-limit usage, and session cost on one line.
 
 ![demo](demo.gif)
 
 ```
-Opus 4.6 | ↑1.2k ↓354 | 53.4k (7%) | $2.50
+O4.6 1M M | 130k ███░░░░░ | 1h1m 12% · 3d5h 34% | 19m +$0.05 $2.50
 ```
+
+Sections are separated by `|`. Fields hide themselves when they aren't actionable, so the line stays short.
 
 ## What it shows
 
-- **Model name** - shortened (e.g., "Opus 4.6")
-- **↑ input / ↓ output** - tokens used this round, growing monotonically as Claude works
-- **Context tokens (%)** - total context window size with color-coded percentage
-- **Session cost** - cumulative USD spend
-- **Location** - agent name, worktree, or directory (only shown when it differs from the project root)
+Left to right:
+
+- **Model + window** — abbreviated model name and context-window size (`Opus 4.6 (1M context)` → `O4.6 1M`; Opus→O, Sonnet→S, Haiku→H).
+- **Auth / plan letter** — `K` (ANTHROPIC_API_KEY), `M` Max, `P` Pro, `T` Team, `E` Enterprise, `A` other. Hidden when logged out with no key.
+- **Location** *(conditional)* — agent name, worktree, or directory basename; shown only when it differs from the project root.
+- **Context** — total tokens plus a **usage bar**. The bar fills to the first ceiling that binds — the 400K retrieval quality line or the auto-compact threshold, whichever is smaller. Past 400K it pegs full and adds a `▶` arrowhead. Colored by absolute token count (see below).
+- **Rate limits** *(when available)* — 5-hour and 7-day usage as `<time-to-reset> <percent>%`, separated by `·`. The 7-day limit is followed by a burn-pace meter (empty = sustainable, filling = you'll hit the cap before it resets).
+- **Cost + timing** — total API request time, this round's spend (`+$`), and cumulative session cost.
 
 ## Color coding
 
-| Indicator | Green | Yellow | Red |
-|-----------|-------|--------|-----|
-| Context % | < 50% | 50-79% | 80%+ |
-| Round input (↑) | < 5k tokens | 5-20k tokens | > 20k tokens |
+Context is colored by **absolute token count** (retrieval quality degrades at fixed token thresholds regardless of window size), not by percentage:
 
-Context % tells you when you're running out of room. Round input helps you learn which prompts are expensive.
+| Section | Green | Yellow | Orange | Red |
+|---------|-------|--------|--------|-----|
+| Context tokens | < 120K | 120–250K | 250–400K | ≥ 400K |
+| Rate limits | < 50% | 50–79% | — | ≥ 80% |
 
 ## Requirements
 
 - [jq](https://jqlang.github.io/jq/) (`brew install jq`)
-- Claude Code v2.1+
+- Claude Code with statusline support
 
 ## Install
 
@@ -38,36 +43,7 @@ cd ~/.claude-statusline
 ./install.sh
 ```
 
-The install script symlinks `statusline.sh` to `~/.claude/statusline.sh` and prints the settings.json snippet to add.
-
-### Per-round tracking (optional)
-
-To track tokens per round (resetting ↑/↓ with each prompt), add the `UserPromptSubmit` hook to `~/.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude-statusline/round-reset.sh"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-Without this hook, ↑/↓ accumulate across the entire session.
-
-## Manual install
-
-1. Copy `statusline.sh` to `~/.claude/statusline.sh`
-2. Make it executable: `chmod +x ~/.claude/statusline.sh`
-3. Add to `~/.claude/settings.json`:
+`install.sh` symlinks `statusline.sh` to `~/.claude/statusline.sh` and prints the `statusLine` snippet to add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -78,26 +54,52 @@ Without this hook, ↑/↓ accumulate across the entire session.
 }
 ```
 
-## Customization
+### Per-round cost tracking (optional)
 
-Edit the color variables at the top of `statusline.sh`:
+The `+$` field shows spend since your last prompt. To reset it on each prompt, add the `UserPromptSubmit` hook to `~/.claude/settings.json`:
 
-```bash
-GREEN='\033[32m'        # context/prompt OK
-YELLOW='\033[33m'       # context/prompt warning
-RED='\033[31m'          # context/prompt critical
-NORMAL='\033[38;5;245m' # labels and default text
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "~/.claude-statusline/round-reset.sh" }
+        ]
+      }
+    ]
+  }
+}
 ```
 
-Adjust thresholds in the `if` blocks to match your preferences.
+Without this hook, `+$` accumulates across the whole session.
+
+## Customization
+
+Configure via environment variables (set them in the `command` or your shell):
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `CTX_BAR_WIDTH` | 8 | Cells in the context usage bar. |
+| `PACE_BAR_WIDTH` | 8 | Cells in the 7-day burn-pace meter. |
+| `COMPACT_OVERHEAD` | 33000 | Tokens subtracted from the window to approximate the auto-compact threshold. |
+| `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | — | If set (e.g. `75`), treats auto-compact as that percent of the window; wins over `COMPACT_OVERHEAD`. |
+
+Colors and thresholds live at the top of `statusline.sh`:
+
+```bash
+GREEN='\033[32m'
+YELLOW='\033[33m'
+ORANGE='\033[38;5;208m'
+RED='\033[31m'
+NORMAL='\033[38;5;245m'
+```
 
 ## How it works
 
-Claude Code pipes a JSON object with session data to the statusline script via stdin after each assistant message. The script extracts fields with `jq` and prints formatted output.
+Claude Code pipes a JSON object with session data to the script on stdin each time the statusline refreshes. The script extracts fields with a single `jq` call and prints one formatted line. Per-round cost tracking uses a `UserPromptSubmit` hook (`round-reset.sh`) that drops a marker file; the statusline resets its round baseline when it sees it.
 
-Per-round tracking works by using a `UserPromptSubmit` hook that writes a reset marker. The statusline accumulates `cache_creation_input_tokens + input_tokens` (fresh tokens per API call) and `output_tokens` within each round, giving a monotonically growing count that resets with each new prompt.
-
-See the [statusline docs](https://code.claude.com/docs/en/statusline) for all available fields.
+See `SPEC.md` for the full layout, color rationale, and threshold derivations, and the [statusline docs](https://code.claude.com/docs/en/statusline) for all available JSON fields.
 
 ## License
 
