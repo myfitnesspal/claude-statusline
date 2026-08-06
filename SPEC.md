@@ -61,7 +61,9 @@ An earlier version showed a colored user-message count as a second degradation a
 Per-round input size is not an independent degradation factor. A single turn loading 80K from file reads is healthier than four 20K turns of conversational refinement. What matters is cumulative total tokens and conversational structure, not per-turn volume.
 
 ### Cache age replaces cache hit percentage
-A session-averaged cache hit percentage isn't actionable. What matters is whether the cache is warm right now, which predicts whether the next message will be fast and cheap or slow and expensive. The ~5 minute TTL means a simple timer since the last API call is the most predictive signal.
+A session-averaged cache hit percentage isn't actionable. What matters is whether the cache is warm right now, which predicts whether the next message will be fast and cheap or slow and expensive. The ~5 minute TTL means a timer since the last API call is the most predictive signal.
+
+The age is measured from the last **API activity**, not the last render. The statusline re-renders at the end of a turn too, so a render-to-render timer counted a long busy turn as idle cooling time — the indicator flashed stale for one frame right as a turn finished, then cleared on the next render. Instead, `last_activity_ts` only advances when `cost.total_api_duration_ms` grew since the previous render (the model actually hit the API). While the model works, `api_ms` climbs and the age stays 0; it accumulates only during genuine idle. A missing baseline (fresh state or a legacy-format upgrade) counts as activity so the session starts warm rather than falsely stale.
 
 ### Round boundaries are set by UserPromptSubmit hook
 `round-reset.sh` creates a marker file on each user prompt. The statusline resets round cost when it sees this marker.
@@ -129,11 +131,11 @@ From the `StatuslineUpdate` hook payload (dumped via `jq . > /tmp/debug.json`):
 ## State Management
 
 State file: `/tmp/claude-statusline-{session_id}`
-Format (v3): `3|round_start_cost|last_ts`
+Format (v4): `4|round_start_cost|last_activity_ts|last_api_ms`
 
 - Version prefix distinguishes formats; unrecognized/old state files are reset on read.
-- Legacy v2 (`2|round_start_cost|msg_count|last_ts`) is still read for graceful in-session upgrade; the dropped message count sat between `round_start_cost` and `last_ts`.
-- `last_ts` is the epoch timestamp of the last statusline render, used to compute cache age.
+- Legacy formats are still read for graceful in-session upgrade: v3 `3|round_start_cost|last_ts` (its `last_ts` is treated as `last_activity_ts`), and v2 `2|round_start_cost|msg_count|last_ts` (the dropped message count sat between `round_start_cost` and `last_ts`).
+- `last_activity_ts` is the epoch timestamp of the render at which the model last hit the API; `last_api_ms` is the `total_api_duration_ms` seen then. Together they let the next render tell busy time from idle time when computing cache age.
 
 New-round marker: `/tmp/claude-statusline-newround-{session_id}`
 Created by `round-reset.sh` on `UserPromptSubmit` hook, consumed by statusline on next update.

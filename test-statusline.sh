@@ -245,42 +245,54 @@ assert_not_contains "legacy v2 msg count not rendered" "$out" "msg"
 echo ""
 echo "=== Cache age timer ==="
 
-# Warm cache (< 3 minutes): hidden
-# Set last_ts to now (0 seconds ago)
+# Cache age measures IDLE time since the model last hit the API, detected by
+# total_api_duration_ms changing between renders. State v4:
+#   4|round_start_cost|last_activity_ts|last_api_ms
+# The run helper's default api_duration_ms is 60000; the fixtures below match it
+# so "no activity" means api_ms unchanged.
+
+# Warm cache: last activity was just now, api_ms unchanged -> hidden.
 reset_state
 now=$(date +%s)
-echo "2|1.50|0|${now}" > "/tmp/claude-statusline-${SESSION}"
-out=$(run 100 500 10000 200 200000)
+echo "4|1.50|${now}|60000" > "/tmp/claude-statusline-${SESSION}"
+out=$(run 100 500 10000 200 200000 1.50 60000)
 assert_not_contains "warm cache hidden (recent)" "$out" "·"
-# Verify no duration marker appears in context section
-# The only · that should appear is section separators, not in context
 
-# At risk (3-5 minutes): yellow, shown
+# At risk (3-5 minutes idle, no new API activity): yellow, shown
 reset_state
-stale_ts=$(($(date +%s) - 240))  # 4 minutes ago
-echo "2|1.50|0|${stale_ts}" > "/tmp/claude-statusline-${SESSION}"
-out=$(run 100 500 10000 200 200000)
+stale_ts=$(($(date +%s) - 240))  # last activity 4 minutes ago
+echo "4|1.50|${stale_ts}|60000" > "/tmp/claude-statusline-${SESSION}"
+out=$(run 100 500 10000 200 200000 1.50 60000)
 assert_contains "at-risk cache shows 4m" "$out" "4m"
 
-# Cold (> 5 minutes): red, shown
+# Cold (> 5 minutes idle): red, shown
 reset_state
-cold_ts=$(($(date +%s) - 420))  # 7 minutes ago
-echo "2|1.50|0|${cold_ts}" > "/tmp/claude-statusline-${SESSION}"
-out=$(run 100 500 10000 200 200000)
+cold_ts=$(($(date +%s) - 420))  # last activity 7 minutes ago
+echo "4|1.50|${cold_ts}|60000" > "/tmp/claude-statusline-${SESSION}"
+out=$(run 100 500 10000 200 200000 1.50 60000)
 assert_contains "cold cache shows 7m" "$out" "7m"
+
+# Anti-flash: last render was long ago, BUT the model just did API work
+# (api_ms grew). The gap was busy time, not idle time -> hidden, no flash.
+# This is the bug fix: a long turn must not flash a stale indicator at its end.
+reset_state
+stale_ts=$(($(date +%s) - 240))
+echo "4|1.50|${stale_ts}|60000" > "/tmp/claude-statusline-${SESSION}"
+out=$(run 100 500 10000 200 200000 1.50 120000)  # api_ms grew 60000 -> 120000
+assert_not_contains "active turn does not flash stale (age hidden)" "$out" "4m"
 
 # Cache age color: at-risk is yellow
 reset_state
 stale_ts=$(($(date +%s) - 240))
-echo "2|1.50|0|${stale_ts}" > "/tmp/claude-statusline-${SESSION}"
-raw=$(run_raw 100 500 10000 200 200000)
+echo "4|1.50|${stale_ts}|60000" > "/tmp/claude-statusline-${SESSION}"
+raw=$(run_raw 100 500 10000 200 200000 1.50 60000)
 assert_contains "at-risk cache is yellow" "$raw" $'\033[33m4m'
 
 # Cache age color: cold is red
 reset_state
 cold_ts=$(($(date +%s) - 420))
-echo "2|1.50|0|${cold_ts}" > "/tmp/claude-statusline-${SESSION}"
-raw=$(run_raw 100 500 10000 200 200000)
+echo "4|1.50|${cold_ts}|60000" > "/tmp/claude-statusline-${SESSION}"
+raw=$(run_raw 100 500 10000 200 200000 1.50 60000)
 assert_contains "cold cache is red" "$raw" $'\033[31m7m'
 
 # First call of session: no previous timestamp, no cache indicator

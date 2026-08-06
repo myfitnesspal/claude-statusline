@@ -28,7 +28,9 @@ strings $(which claude) | grep -oE '.{0,200}IeH.{0,200}'
 The minified function names (IeH, yU, PYH) will change between versions. Look for the pattern: `tokens=${...} threshold=${...} effectiveWindow=${...}`.
 
 ### Cache age replaces cache hit %
-Shows time since last API call, predicting whether the ~5 minute prompt cache TTL has expired. Hidden when warm (< 3 minutes). Yellow 3-5 minutes (at risk), red > 5 minutes (cold).
+Shows idle time since the last API call, predicting whether the ~5 minute prompt cache TTL has expired. Hidden when warm (< 3 minutes). Yellow 3-5 minutes (at risk), red > 5 minutes (cold).
+
+Measured from the last API activity, not the last render — `last_activity_ts` advances only when `total_api_duration_ms` grows between renders. This is deliberate: a render also fires at turn end, so a render-to-render timer counted a long busy turn as idle and flashed a stale indicator for one frame as the turn finished. See SPEC.md "Cache age replaces cache hit percentage" and state format v4.
 
 ### JSON payload
 The statusline hook does NOT receive the `/context` category breakdown (system prompt, tools, messages, etc.). Only aggregate token counts are available. Dump the payload with:

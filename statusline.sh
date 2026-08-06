@@ -72,20 +72,22 @@ fmt_tokens() {
 	fi
 }
 
-# State format v3: version|round_start_cost|last_ts
-# Legacy v2 (version|round_start_cost|msg_count|last_ts) is still read; the
-# dropped message count sat between round_start_cost and last_ts.
+# State format v4: version|round_start_cost|last_activity_ts|last_api_ms
+# last_activity_ts is the render time at which the model last hit the API (see
+# cache-age note below), NOT merely the last render. Legacy formats are still
+# read for graceful in-session upgrade:
+#   v3: 3|round_start_cost|last_ts            (last_ts treated as last activity)
+#   v2: 2|round_start_cost|msg_count|last_ts  (dropped msg count between the two)
 round_start_cost=$cost
-last_ts=0
+last_activity_ts=0
+last_api_ms=""
 if [ -f "$STATE_FILE" ]; then
-	IFS='|' read -r _ver _rsc _f2 _f3 < "$STATE_FILE"
-	if [ "$_ver" = "3" ]; then
-		round_start_cost=$_rsc
-		last_ts=${_f2:-0}
-	elif [ "$_ver" = "2" ]; then
-		round_start_cost=$_rsc
-		last_ts=${_f3:-0}
-	fi
+	IFS='|' read -r _ver _rsc _f2 _f3 _f4 < "$STATE_FILE"
+	case "$_ver" in
+		4) round_start_cost=$_rsc; last_activity_ts=${_f2:-0}; last_api_ms=${_f3:-} ;;
+		3) round_start_cost=$_rsc; last_activity_ts=${_f2:-0} ;;
+		2) round_start_cost=$_rsc; last_activity_ts=${_f3:-0} ;;
+	esac
 fi
 
 # If UserPromptSubmit hook signaled a new round, reset round metrics
@@ -94,15 +96,23 @@ if [ -f "$NEWROUND_FILE" ]; then
 	rm -f "$NEWROUND_FILE"
 fi
 
-# Cache age: seconds since last statusline render
+# Cache age: seconds the model has been IDLE (predicts prompt-cache TTL expiry).
+# The signal is time since the last API call, not time since the last render:
+# a render fires at the end of a long turn too, and measuring render-to-render
+# gaps counted that busy turn as idle time — so the indicator flashed stale for
+# one frame at turn end, then cleared. We instead advance last_activity_ts only
+# when total_api_duration_ms grew since the last render (the model actually hit
+# the API). While the model works, api_ms climbs and the age stays 0; it only
+# accumulates during genuine idle. Missing baseline (fresh state / legacy
+# upgrade) counts as activity, so we start warm rather than falsely stale.
 now=$(date +%s)
-cache_age=0
-if [ "$last_ts" -gt 0 ]; then
-	cache_age=$((now - last_ts))
+if [ -z "$last_api_ms" ] || [ "$api_ms" != "$last_api_ms" ] || [ "$last_activity_ts" -eq 0 ]; then
+	last_activity_ts=$now
 fi
+cache_age=$((now - last_activity_ts))
 
 # Save state
-echo "3|${round_start_cost}|${now}" > "$STATE_FILE"
+echo "4|${round_start_cost}|${last_activity_ts}|${api_ms}" > "$STATE_FILE"
 
 # Usage snapshot for programmatic reads (agent self-throttling). Authoritative rate-limit
 # fields come straight from Claude Code's statusline input; persisted here each render so a
