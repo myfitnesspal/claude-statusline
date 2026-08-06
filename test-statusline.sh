@@ -7,9 +7,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STATUSLINE="$SCRIPT_DIR/statusline.sh"
 
-# Ensure env vars don't leak into tests
+# Ensure ambient config env vars don't leak into tests (they'd skew default-dependent
+# assertions). Tests set what they need explicitly per-run.
 unset CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
 unset STATUSLINE_COMPACT_OVERHEAD
+unset STATUSLINE_CTX_BAR_WIDTH
+unset STATUSLINE_PACE_BAR_WIDTH
+unset STATUSLINE_PACE_TOL
+unset STATUSLINE_PACE_GAMMA
+unset STATUSLINE_PACE_WORK
+unset STATUSLINE_PACE_HORIZON_TS
+unset STATUSLINE_PACE_SHOW_ON_PACE
+unset STATUSLINE_PACE_SHOW_COLD
 unset ANTHROPIC_API_KEY
 PASS=0
 FAIL=0
@@ -281,14 +290,21 @@ raw=$(pace_lin 80); out=$(printf '%s' "$raw" | strip_ansi)
 assert_contains "severe hot: 6-cell" "$out" "80% ██████░░"
 assert_contains "severe hot is red" "$raw" "${RD}██████"
 
-# Cold (leaving budget on the table): fills from the RIGHT in blue, never escalates.
+# Cold (leaving budget on the table) is off by default: under-pace shows nothing.
 reset_state
-raw=$(pace_lin 30); out=$(printf '%s' "$raw" | strip_ansi)
-assert_contains "cold: 4-cell from the right" "$out" "30% ░░░░████"
+out=$(pace_lin 30 | strip_ansi)
+assert_not_contains "cold hidden by default (no bar)" "$out" "30% ░"
+assert_contains "cold hidden: 7d percent still shown" "$out" "30%"
+
+# With STATUSLINE_PACE_SHOW_COLD=true it renders: fills from the RIGHT in blue, never escalates.
+pace_cold(){ pace_json "$1" 302400 | STATUSLINE_PACE_SHOW_COLD=true STATUSLINE_PACE_GAMMA=1 STATUSLINE_PACE_BAR_WIDTH=8 bash "$STATUSLINE"; }
+reset_state
+raw=$(pace_cold 30); out=$(printf '%s' "$raw" | strip_ansi)
+assert_contains "cold (opted in): 4-cell from the right" "$out" "30% ░░░░████"
 assert_contains "cold is blue" "$raw" "${BLU}████"
 reset_state
-out=$(pace_lin 42 | strip_ansi)
-assert_contains "mild cold: 2 cells on the right" "$out" "42% ░░░░░░██"
+out=$(pace_cold 42 | strip_ansi)
+assert_contains "mild cold (opted in): 2 cells on the right" "$out" "42% ░░░░░░██"
 
 # No overflow marker even when very hot (clamps at full).
 reset_state
@@ -324,8 +340,8 @@ assert_contains "far horizon: hot (overshoot)" "$out" "70% ████░░░
 # COLD (you'd leave a little unused) -> 1 cell of blue on the right.
 reset_state
 _now=$(date +%s)
-out=$(pace_json 70 302400 | STATUSLINE_PACE_HORIZON_TS=$((_now + 100000)) STATUSLINE_PACE_GAMMA=1 STATUSLINE_PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
-assert_contains "near horizon: flips to cold, 1 cell right" "$out" "70% ░░░░░░░█"
+out=$(pace_json 70 302400 | STATUSLINE_PACE_SHOW_COLD=true STATUSLINE_PACE_HORIZON_TS=$((_now + 100000)) STATUSLINE_PACE_GAMMA=1 STATUSLINE_PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+assert_contains "near horizon: flips to cold, 1 cell right (cold shown)" "$out" "70% ░░░░░░░█"
 
 # Horizon already passed (coasting) -> meter hidden entirely.
 reset_state

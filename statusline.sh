@@ -422,8 +422,10 @@ fmt_pace() {
 		color="$YELLOW"; [ "$cells" -ge 3 ] && color="$ORANGE"; [ "$cells" -ge 6 ] && color="$RED"
 		printf ' %b%b' "${color}$(bar_of "$cells" "$cells")${NORMAL}$(bar_of 0 $(( w - cells )))" "$NORMAL"
 	else
-		# Too cold: fills from the right, blue (never escalates).
-		printf ' %b%b' "${NORMAL}$(bar_of 0 $(( w - cells )))${COLD}$(bar_of "$cells" "$cells")" "$NORMAL"
+		# Too cold (under-pace, leaving budget unused): OFF by default — not everyone
+		# wants to be nagged about under-use. STATUSLINE_PACE_SHOW_COLD=true opts in;
+		# then it fills from the right in blue (never escalates).
+		[ "${STATUSLINE_PACE_SHOW_COLD:-false}" = "true" ] && printf ' %b%b' "${NORMAL}$(bar_of 0 $(( w - cells )))${COLD}$(bar_of "$cells" "$cells")" "$NORMAL"
 	fi
 }
 
