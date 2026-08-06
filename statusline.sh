@@ -164,12 +164,18 @@ else
 fi
 
 # Context usage bar: fill = ctx_tokens / usable_cap, so a full bar is the
-# min(compact_threshold, 400000) ceiling. Past the ceiling the bar pegs full and
-# gets a ▸ overflow marker. Fill inherits ctx_color (absolute token thresholds).
+# min(compact_threshold, 400000) ceiling. Fill inherits ctx_color (absolute token
+# thresholds). Overflow marker: a ▶ arrowhead fused to the bar (adds one cell,
+# reading as the bar continuing off-scale), shown only in the red retrieval zone
+# (>= 400K) and strictly past the ceiling. On a small window the ceiling is the
+# compact threshold (< 400K, unreachable-red), so the bar just pegs full with no
+# marker — auto-compact self-heals, so it needs no alarm glyph.
 ctx_filled=$(( (compact_pct * CTX_BAR_WIDTH + 50) / 100 ))
 [ "$ctx_filled" -gt "$CTX_BAR_WIDTH" ] && ctx_filled=$CTX_BAR_WIDTH
 ctx_bar=$(bar_of "$ctx_filled" "$CTX_BAR_WIDTH")
-[ "$ctx_tokens" -gt "$usable_cap" ] && ctx_bar="${ctx_bar}▸"
+if [ "$ctx_tokens" -ge 400000 ] && [ "$ctx_tokens" -gt "$usable_cap" ]; then
+	ctx_bar="${ctx_bar}▶"
+fi
 
 # Format duration from seconds (e.g. 3661 -> "1h1m", 90 -> "1m", 86400 -> "1d")
 fmt_duration() {

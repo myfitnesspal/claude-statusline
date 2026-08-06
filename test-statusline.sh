@@ -157,48 +157,61 @@ out=$(CTX_BAR_WIDTH=10 run 167000 0 0 0 1000000)
 assert_contains "1M window: same tokens, partial bar" "$out" "████░░░░░░"
 assert_not_contains "1M window: not full" "$out" "██████████"
 
-# Exactly at the ceiling: full bar, NO overflow marker.
+# The overflow marker (▶) is gated on the RED zone (>= 400K) AND strictly past
+# the bar ceiling. It fuses to the full bar (no space) and adds one cell of width.
+
+# Exactly at the ceiling (400K on 1M): full red bar, NO marker yet (not past it).
 reset_state
 out=$(CTX_BAR_WIDTH=10 run 400000 0 0 0 1000000)
 assert_contains "at ceiling: full bar" "$out" "██████████"
-assert_not_contains "at ceiling: no marker" "$out" "▸"
+assert_not_contains "at ceiling: no marker" "$out" "▶"
 
-# Past the ceiling: pegged full with the ▸ marker.
+# Past the ceiling in the red zone: pegged full with the fused ▶ marker.
 reset_state
 out=$(CTX_BAR_WIDTH=10 run 410000 0 0 0 1000000)
-assert_contains "past ceiling: full bar + marker" "$out" "██████████▸"
+assert_contains "past ceiling (red): full bar + fused marker" "$out" "██████████▶"
 
-# Small window: ceiling is the compact threshold (< 400K), so a full+marker bar
-# can be non-red. 180000 tokens on 200K: cap=167000 (over), color yellow (120-250K).
+# Full bar but NOT red (orange, 399K on 1M): no marker — marker is red-gated.
+reset_state
+raw=$(CTX_BAR_WIDTH=10 run_raw 399000 0 0 0 1000000)
+assert_contains "orange full bar is orange" "$raw" $'\033[38;5;208m399k'
+assert_contains "orange full bar is full" "$raw" "██████████"
+assert_not_contains "orange full bar: no marker (not red)" "$raw" "▶"
+
+# Small window: ceiling is the compact threshold (< 400K) and 400K is unreachable,
+# so overflow pegs the bar full but shows NO marker (yellow, never red).
 reset_state
 raw=$(CTX_BAR_WIDTH=10 run_raw 180000 0 0 0 200000)
 assert_contains "small-window overflow is yellow" "$raw" $'\033[33m180k'
-assert_contains "small-window overflow pegs full+marker" "$raw" "██████████▸"
+assert_contains "small-window overflow pegs full" "$raw" "██████████"
+assert_not_contains "small-window overflow: no marker" "$raw" "▶"
 
 echo ""
 echo "=== CLAUDE_AUTOCOMPACT_PCT_OVERRIDE ==="
 
-# Override shifts the denominator. 130000 tokens on 200K:
-#   default cap=167000 -> 77% (8 cells, no marker)
-#   override=50 -> cap=100000 -> over -> full+marker
+# Override shifts the denominator, seen in the fill level (marker is red-gated, so
+# a 200K window never shows one). 130000 tokens on 200K:
+#   default cap=167000 -> 77% (8 cells)
+#   override=50 -> cap=100000 -> overflow -> pegged full (10 cells), no marker
 reset_state
 out=$(CTX_BAR_WIDTH=10 run 130000 0 0 0 200000)
 assert_contains "default denominator: 8-cell bar" "$out" "████████░░"
-assert_not_contains "default denominator: no marker" "$out" "▸"
+assert_not_contains "default denominator: no marker" "$out" "▶"
 reset_state
 out=$(CTX_BAR_WIDTH=10 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 run 130000 0 0 0 200000)
-assert_contains "override=50 shrinks denominator, overflows" "$out" "██████████▸"
+assert_contains "override=50 shrinks denominator, pegs full" "$out" "██████████"
+assert_not_contains "override=50: still no marker on small window" "$out" "▶"
 
 # COMPACT_OVERHEAD shifts the denominator too: overhead=100000 on 200K -> cap=100000.
 reset_state
 out=$(CTX_BAR_WIDTH=10 COMPACT_OVERHEAD=100000 run 130000 0 0 0 200000)
-assert_contains "COMPACT_OVERHEAD shrinks denominator, overflows" "$out" "██████████▸"
+assert_contains "COMPACT_OVERHEAD shrinks denominator, pegs full" "$out" "██████████"
 
-# Override beats COMPACT_OVERHEAD: override=50 (cap=100000) wins over overhead=0
-# (which would give cap=200000 -> 65%, a 7-cell bar).
+# Override beats COMPACT_OVERHEAD: override=50 (cap=100000) pegs full; overhead=0
+# would give cap=200000 -> 65% (a 7-cell bar), so a full bar proves override won.
 reset_state
 out=$(CTX_BAR_WIDTH=10 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 COMPACT_OVERHEAD=0 run 130000 0 0 0 200000)
-assert_contains "override beats COMPACT_OVERHEAD" "$out" "██████████▸"
+assert_contains "override beats COMPACT_OVERHEAD" "$out" "██████████"
 assert_not_contains "override beats COMPACT_OVERHEAD (not overhead's bar)" "$out" "███████░░░"
 
 echo ""
