@@ -155,14 +155,19 @@ Approximated as `ctx_max - 33000`. Override with `COMPACT_OVERHEAD` env var.
 | `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | unset | If set (e.g. 75), treats the auto-compact threshold as that percent of the window; wins over `COMPACT_OVERHEAD`. |
 | `CTX_BAR_WIDTH` | 8 | Cells in the context usage bar. |
 | `PACE_BAR_WIDTH` | 8 | Cells in the 7d throttle meter. |
-| `PACE_DEADLINE` | unset | Weekly work-week deadline (`"Ddd HH:MM"` local, e.g. `"Fri 18:00"`). The 7d pace meter judges "will I run dry in time" against this instead of the reset (see below). Unset = judge to the reset. |
-| `PACE_DEADLINE_TS` | unset | Absolute-epoch override of the computed deadline (advanced / tests). Takes precedence over `PACE_DEADLINE`. |
+| `PACE_WORK` | unset | Your weekly work schedule (`"<days> <start>-<end>"` local 24h, e.g. `"Mon-Fri 09-18"`; days a range like `Mon-Fri` or a comma list like `Mon,Wed,Fri`; hours `HH` or `HH:MM`). The 7d pace meter judges "will I run dry in time?" against your work schedule instead of the reset (see below). Unset = judge to the reset. |
+| `PACE_HORIZON_TS` | unset | Absolute-epoch override of the computed horizon (advanced / tests). Takes precedence over `PACE_WORK`. |
 | `CLAUDE_JSON_PATH` | `~/.claude.json` | Credential file the auth/plan letter reads (tests point it at fixtures). |
 
-### 7d pace deadline
+### 7d pace work schedule
 
-The 7d throttle meter asks "at my current average burn, do I run dry before I stop needing the budget?" By default that horizon is the account reset. But a work account only needs to last through the work week — the weekend before the reset is free time you won't spend, so judging pace all the way to a Sunday reset over-penalizes you.
+The 7d throttle meter asks "at my current average burn, do I run dry before I stop needing the budget?" By default that horizon is the account reset. But a work account only needs to last through the work week — off-hours before the reset are free time you won't spend, so judging pace all the way to a Sunday reset over-penalizes a Mon–Fri user.
 
-`PACE_DEADLINE` moves the horizon to your weekly work-week end (e.g. `"Fri 18:00"`, local). The burn *rate* is still measured over the real elapsed window; only the "do I make it in time?" comparison uses the deadline, capped at the reset (`horizon = min(reset, next deadline)`). Effect: mid-week while burning hot it still warns (you'd wall before Friday), but later in the week it relaxes correctly (if you'd only wall Saturday, you've made it). Once you're past this week's deadline — coasting to the reset with no more work — the meter hides.
+`PACE_WORK` sets the horizon to **the last work-active instant at or before the reset** (computed by `pace_horizon`). The burn *rate* is still measured over the real elapsed window; only the "do I make it in time?" comparison uses this horizon. Concretely:
 
-It's expressed as an absolute weekday+time rather than an offset from the reset because the weekly reset is not a stable wall-clock time (it drifts with the billing cycle); an offset would silently point at the wrong day in a week the reset moves, whereas an absolute deadline is computed independently. The computation is pure arithmetic on the current wall clock (`date +%u/%H/%M/%S`) with no date-string parsing, so it is macOS/Linux portable; DST day-length shifts are ignored (a ~1h error twice a year, immaterial to pace).
+- Reset in off-hours (Sunday 19:00, Mon–Fri worker) → horizon = the preceding Friday 18:00. Mid-week burning hot it still warns (you'd wall before Friday); later in the week it relaxes (if you'd only wall Saturday you've made it); once Friday 18:00 is behind you, the meter hides (coasting to the reset).
+- Reset **inside** work hours (Thursday 15:00) → horizon = the reset itself. You work right up to it, so there is no free slack to discount — the meter behaves exactly as the default. This is the case a fixed weekday deadline got wrong.
+
+Why a schedule and not a single "Fri 18:00" deadline: the weekly reset is **not** a stable wall-clock time (it drifts with the billing cycle). A fixed deadline is only correct while the reset sits on the weekend; the week it drifts mid-work-week, the deadline points at the wrong day and the meter goes dark exactly when usage is highest. Deriving the horizon from the schedule + the actual reset each render is correct for any reset time.
+
+The computation is pure arithmetic: wall-clock components come from the epoch plus the current `date +%z` offset (no `date -r`/`date -d` string parsing), so it is macOS/Linux portable. The offset is sampled once, so DST day-length shifts are approximate (a ~1h error twice a year, immaterial to pace). Malformed `PACE_WORK` falls back to judging against the reset.

@@ -215,40 +215,91 @@ else
 	fi
 fi
 
-# Next occurrence (epoch) of the weekly PACE_DEADLINE ("Ddd HH:MM" local, e.g.
-# "Fri 18:00") strictly after $1 (now). Pure arithmetic on the current wall clock
-# (date +%u/%H/%M/%S) — no date-string parsing, so it is macOS/Linux portable. DST
-# day-length shifts are ignored (a ~1h error twice a year, immaterial to pace).
-# Echoes nothing and returns 1 on malformed input.
-pace_deadline_ts() {
-	local now=$1 spec day hm th tm target_dow target_secs cur_dow cur_secs day_delta
-	spec="${PACE_DEADLINE}"
-	day="${spec%% *}"
-	hm="${spec#* }"; hm="${hm// /}"
-	case "$(printf '%s' "$day" | tr 'A-Z' 'a-z')" in
-		mon*) target_dow=1 ;;
-		tue*) target_dow=2 ;;
-		wed*) target_dow=3 ;;
-		thu*) target_dow=4 ;;
-		fri*) target_dow=5 ;;
-		sat*) target_dow=6 ;;
-		sun*) target_dow=7 ;;
-		*) return 1 ;;
+# Day name (mon/tue/.../sun, case/prefix-insensitive) -> 1..7 (Mon=1), 0 if invalid.
+_pace_dow() {
+	case "$(printf '%s' "$1" | tr 'A-Z' 'a-z')" in
+		mon*) echo 1 ;; tue*) echo 2 ;; wed*) echo 3 ;; thu*) echo 4 ;;
+		fri*) echo 5 ;; sat*) echo 6 ;; sun*) echo 7 ;; *) echo 0 ;;
 	esac
-	case "$hm" in
-		*:*) th="${hm%%:*}"; tm="${hm##*:}" ;;
-		*)   th="$hm"; tm=0 ;;
+}
+
+# Effective pace horizon: the latest work-active instant at or before the reset, per
+# PACE_WORK ("<days> <start>-<end>" local 24h, e.g. "Mon-Fri 09-18"; days a range
+# like Mon-Fri or a comma list like Mon,Wed,Fri; hours HH or HH:MM). Echoes that
+# epoch; echoes nothing and returns 1 if PACE_WORK is unset or malformed. $1 = now
+# epoch, $2 = reset epoch. Wall-clock components are derived from the epoch plus the
+# current `date +%z` offset — pure arithmetic, portable, DST-approximate (offset
+# sampled once). If the reset falls inside work hours the horizon IS the reset (you
+# work right up to it); if it falls in off-hours the horizon is the preceding
+# work-end, so the meter later hides once that work-end is behind you.
+pace_horizon() {
+	local now=$1 reset=$2 spec days_spec hours_spec start_spec end_spec
+	spec="${PACE_WORK:-}"
+	[ -z "$spec" ] && return 1
+	days_spec="${spec%% *}"
+	hours_spec="${spec#* }"; hours_spec="${hours_spec// /}"
+	[ "$hours_spec" = "$spec" ] && return 1        # no space between days and hours
+	case "$hours_spec" in *-*) : ;; *) return 1 ;; esac
+	start_spec="${hours_spec%%-*}"; end_spec="${hours_spec##*-}"
+	local sh sm eh em start_secs end_secs
+	case "$start_spec" in *:*) sh="${start_spec%%:*}"; sm="${start_spec##*:}" ;; *) sh="$start_spec"; sm=0 ;; esac
+	case "$end_spec"   in *:*) eh="${end_spec%%:*}";   em="${end_spec##*:}"   ;; *) eh="$end_spec";   em=0 ;; esac
+	case "${sh}${sm}${eh}${em}" in ''|*[!0-9]*) return 1 ;; esac
+	start_secs=$(( 10#$sh * 3600 + 10#$sm * 60 ))
+	end_secs=$(( 10#$eh * 3600 + 10#$em * 60 ))
+	{ [ "$start_secs" -ge "$end_secs" ] || [ "$end_secs" -gt 86400 ]; } && return 1
+
+	# Build a work-day membership string " d d ... " from a range or comma list.
+	local work_dows=" " a b n part IFS
+	case "$days_spec" in
+		*-*)
+			a=$(_pace_dow "${days_spec%%-*}"); b=$(_pace_dow "${days_spec##*-}")
+			{ [ "$a" = 0 ] || [ "$b" = 0 ]; } && return 1
+			n=$a
+			while : ; do work_dows="${work_dows}${n} "; [ "$n" = "$b" ] && break; n=$(( n % 7 + 1 )); done ;;
+		*,*)
+			IFS=,
+			for part in $days_spec; do
+				n=$(_pace_dow "$part"); [ "$n" = 0 ] && return 1
+				work_dows="${work_dows}${n} "
+			done ;;
+		*)
+			a=$(_pace_dow "$days_spec"); [ "$a" = 0 ] && return 1
+			work_dows="${work_dows}${a} " ;;
 	esac
-	case "${th}${tm}" in ''|*[!0-9]*) return 1 ;; esac
-	target_secs=$(( 10#$th * 3600 + 10#$tm * 60 ))
-	[ "$target_secs" -ge 86400 ] && return 1
-	cur_dow=$(date +%u)
-	cur_secs=$(( 10#$(date +%H) * 3600 + 10#$(date +%M) * 60 + 10#$(date +%S) ))
-	day_delta=$(( (target_dow - cur_dow + 7) % 7 ))
-	if [ "$day_delta" -eq 0 ] && [ "$target_secs" -le "$cur_secs" ]; then
-		day_delta=7
-	fi
-	printf '%s' "$(( now - cur_secs + day_delta * 86400 + target_secs ))"
+
+	# tz offset (seconds) from date +%z (+HHMM / -HHMM), applied to reach local time.
+	local z sign zh zm off
+	z=$(date +%z); sign="${z%"${z#?}"}"; zh="${z:1:2}"; zm="${z:3:2}"
+	off=$(( 10#$zh * 3600 + 10#$zm * 60 )); [ "$sign" = "-" ] && off=$(( -off ))
+
+	# Local components of the reset.
+	local rl rdow rsecs rmid
+	rl=$(( reset + off ))
+	rdow=$(( (rl / 86400 + 3) % 7 + 1 ))
+	rsecs=$(( rl - (rl / 86400) * 86400 ))
+	rmid=$(( reset - rsecs ))                        # epoch of the reset's local midnight
+
+	# Reset itself inside work hours -> you work up to it -> horizon = reset.
+	case "$work_dows" in *" $rdow "*)
+		if [ "$rsecs" -ge "$start_secs" ] && [ "$rsecs" -lt "$end_secs" ]; then
+			printf '%s' "$reset"; return 0
+		fi ;;
+	esac
+
+	# Otherwise the latest work-end at or before the reset.
+	local k dm dow cand
+	k=0
+	while [ "$k" -le 7 ]; do
+		dm=$(( rmid - k * 86400 ))
+		dow=$(( ((dm + off) / 86400 + 3) % 7 + 1 ))
+		cand=$(( dm + end_secs ))
+		case "$work_dows" in *" $dow "*)
+			[ "$cand" -le "$reset" ] && { printf '%s' "$cand"; return 0; } ;;
+		esac
+		k=$(( k + 1 ))
+	done
+	return 1
 }
 
 # 7d throttle meter, appended to the 7d limit — a bounded heat bar. EMPTY = your
@@ -259,19 +310,21 @@ pace_deadline_ts() {
 # of runway, climbing fast only as the wall approaches. Grey when cool, yellow
 # warming, red when >half full or >=90% used. Hidden the window's first ~8h.
 #
-# The horizon is the reset by default. Set PACE_DEADLINE ("Ddd HH:MM" local, e.g.
-# "Fri 18:00") to judge pace against a weekly work-week deadline instead — the burn
-# rate is still measured over the real elapsed window, but "do I run dry in time" is
-# asked against the deadline (capped at the reset). Past this week's deadline, with
-# only the coast to the reset left, the meter hides. PACE_DEADLINE_TS is an
-# absolute-epoch override of the computed deadline (advanced / tests).
+# The horizon is the reset by default. Set PACE_WORK ("<days> <start>-<end>" local,
+# e.g. "Mon-Fri 09-18") to judge pace against your work schedule instead: the burn
+# rate is still measured over the real elapsed window, but "do I run dry in time?" is
+# asked against the last work-active instant at or before the reset (see pace_horizon).
+# Unlike a fixed weekday deadline this stays correct when the reset drifts mid-week —
+# a reset during work hours simply yields the reset itself. Once that work moment is
+# behind you (coasting to the reset), the meter hides. PACE_HORIZON_TS is an
+# absolute-epoch override of the computed horizon (advanced / tests).
 fmt_pace() {
 	local pct=$1
 	local reset_ts=$2
 	[ -z "$pct" ] && return
 	[ -z "$reset_ts" ] && return
 	[ "$pct" -le 0 ] && return
-	local now window remaining_reset elapsed horizon deadline_ts remaining wall runway heat cells filled bar color
+	local now window remaining_reset elapsed horizon h remaining wall runway heat cells filled bar color
 	now=$(date +%s)
 	window=604800
 	remaining_reset=$((reset_ts - now))
@@ -280,18 +333,16 @@ fmt_pace() {
 	elapsed=$((window - remaining_reset))
 	[ "$elapsed" -lt $((window / 20)) ] && return   # <~8.4h in: not enough to extrapolate
 
-	# Effective horizon: the work-week deadline if set (capped at reset), else the reset.
+	# Effective horizon: the work-schedule horizon if set, else the reset; capped at
+	# the reset. A horizon at or before now means the last work moment is behind you
+	# (coasting to the reset) -> hide.
 	horizon=$reset_ts
-	deadline_ts=""
-	if [ -n "${PACE_DEADLINE_TS:-}" ]; then
-		deadline_ts=$PACE_DEADLINE_TS
-	elif [ -n "${PACE_DEADLINE:-}" ]; then
-		deadline_ts=$(pace_deadline_ts "$now")
+	if [ -n "${PACE_HORIZON_TS:-}" ]; then
+		horizon=$PACE_HORIZON_TS
+	elif [ -n "${PACE_WORK:-}" ]; then
+		h=$(pace_horizon "$now" "$reset_ts") && [ -n "$h" ] && horizon=$h
 	fi
-	if [ -n "$deadline_ts" ]; then
-		[ "$deadline_ts" -gt "$reset_ts" ] && return   # no work-end before reset -> coasting
-		horizon=$deadline_ts
-	fi
+	[ "$horizon" -gt "$reset_ts" ] && horizon=$reset_ts
 	remaining=$((horizon - now))
 	[ "$remaining" -le 0 ] && return
 

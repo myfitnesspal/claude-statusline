@@ -239,53 +239,81 @@ out=$(pace_json 50 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
 assert_contains "PACE_BAR_WIDTH=8 yields an 8-cell meter" "$out" "░░░░░░░░"
 
 echo ""
-echo "=== 7d pace deadline (PACE_DEADLINE) ==="
+echo "=== 7d pace horizon (heat vs the effective horizon) ==="
 
-# Scenario: 7d window half-elapsed (302400s left), 70% used. At that average rate
-# the wall is 129600s out. Judged against the reset (302400s) that's ~heat 58 -> a
-# red, mostly-full meter. PACE_DEADLINE (or its absolute-epoch form PACE_DEADLINE_TS)
-# judges pace against an earlier work-week deadline instead, capped at the reset.
+# Scenario: 7d window half-elapsed (302400s left), 70% used. At that average rate the
+# wall is 129600s out. Judged against the reset (302400s) that's ~heat 58 -> a red,
+# mostly-full meter. The effective horizon (from PACE_WORK; forced here with the
+# PACE_HORIZON_TS override) moves the "do I make it in time" comparison earlier.
 
-# No deadline: judged to reset -> red 5-cell meter.
+# No horizon override: judged to reset -> red 5-cell meter.
 reset_state
 raw=$(pace_json 70 302400 | PACE_BAR_WIDTH=8 bash "$STATUSLINE")
 out=$(printf '%s' "$raw" | strip_ansi)
-assert_contains "no deadline: 5-cell meter" "$out" "70% █████░░░"
-assert_contains "no deadline: meter is red" "$raw" $'\033[31m █████░░░'
+assert_contains "no horizon: 5-cell meter" "$out" "70% █████░░░"
+assert_contains "no horizon: meter is red" "$raw" $'\033[31m █████░░░'
 
-# Deadline sooner than the wall (120000s < 129600s): you finish before you'd wall
+# Horizon sooner than the wall (120000s < 129600s): you finish before you'd wall
 # -> made it -> empty meter.
 reset_state
 _now=$(date +%s)
-out=$(pace_json 70 302400 | PACE_DEADLINE_TS=$((_now + 120000)) PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
-assert_contains "deadline before wall: empty meter (made it)" "$out" "70% ░░░░░░░░"
+out=$(pace_json 70 302400 | PACE_HORIZON_TS=$((_now + 120000)) PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+assert_contains "horizon before wall: empty meter (made it)" "$out" "70% ░░░░░░░░"
 
-# Deadline later than the wall but before reset (200000s): still exposed, but cooler
+# Horizon later than the wall but before reset (200000s): still exposed, but cooler
 # than judging to the full reset -> yellow 3-cell meter.
 reset_state
 _now=$(date +%s)
-raw=$(pace_json 70 302400 | PACE_DEADLINE_TS=$((_now + 200000)) PACE_BAR_WIDTH=8 bash "$STATUSLINE")
+raw=$(pace_json 70 302400 | PACE_HORIZON_TS=$((_now + 200000)) PACE_BAR_WIDTH=8 bash "$STATUSLINE")
 out=$(printf '%s' "$raw" | strip_ansi)
-assert_contains "deadline eases the meter: 3-cell" "$out" "70% ███░░░░░"
+assert_contains "horizon eases the meter: 3-cell" "$out" "70% ███░░░░░"
 assert_contains "eased meter is yellow" "$raw" $'\033[33m ███░░░░░'
 
-# Deadline past the reset (coasting to reset): no work-end before reset -> meter hidden.
+# Horizon already passed (coasting: last work moment is behind you) -> meter hidden.
 reset_state
 _now=$(date +%s)
-out=$(pace_json 70 302400 | PACE_DEADLINE_TS=$((_now + 400000)) PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+out=$(pace_json 70 302400 | PACE_HORIZON_TS=$((_now - 1000)) PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
 assert_contains "coasting: 7d percent still shown" "$out" "70%"
-assert_not_contains "coasting: pace meter hidden" "$out" "70% █"
+assert_not_contains "coasting: pace meter hidden (no fill)" "$out" "70% █"
 assert_not_contains "coasting: no empty meter either" "$out" "70% ░"
 
-# Malformed PACE_DEADLINE falls back to judging against the reset (no crash).
+# Malformed PACE_WORK falls back to judging against the reset (no crash).
 reset_state
-out=$(pace_json 70 302400 | PACE_DEADLINE="not a day" PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
-assert_contains "bad PACE_DEADLINE falls back to reset" "$out" "70% █████░░░"
+out=$(pace_json 70 302400 | PACE_WORK="garbage" PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+assert_contains "bad PACE_WORK falls back to reset" "$out" "70% █████░░░"
 
-# A well-formed PACE_DEADLINE renders without error (day/time actually parses).
+# A well-formed PACE_WORK renders without error (schedule actually parses).
 reset_state
-out=$(pace_json 70 302400 | PACE_DEADLINE="Fri 18:00" PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
-assert_contains "valid PACE_DEADLINE still renders the 7d limit" "$out" "70%"
+out=$(pace_json 70 302400 | PACE_WORK="Mon-Fri 09-18" PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+assert_contains "valid PACE_WORK still renders the 7d limit" "$out" "70%"
+
+echo ""
+echo "=== 7d pace work horizon computation (pace_horizon) ==="
+
+# horizon = the latest work-active instant at or before the reset. Run the extracted
+# function under TZ=UTC with hand-picked epochs whose UTC weekdays are known (epoch 0
+# = Thu 1970-01-01). Fixtures: Wed 12:00 = 561600, Fri 18:00 = 756000,
+# Thu 15:00 = 658800, Sun 19:00 = 932400, Mon 08:00 = 979200.
+sed -n '/^_pace_dow() {/,/^}/p; /^pace_horizon() {/,/^}/p' "$STATUSLINE" > "$AUTH_JSON_DIR/pace_horizon_fns.sh"
+source "$AUTH_JSON_DIR/pace_horizon_fns.sh"
+
+h=$(TZ=UTC PACE_WORK="Mon-Fri 09-18" pace_horizon 561600 932400)
+assert_contains "weekend reset (Sun 19:00) -> Friday 18:00" "$h" "756000"
+
+h=$(TZ=UTC PACE_WORK="Mon-Fri 09-18" pace_horizon 561600 658800)
+assert_contains "mid-week reset (Thu 15:00, in work hours) -> the reset itself" "$h" "658800"
+
+h=$(TZ=UTC PACE_WORK="Mon-Fri 09-18" pace_horizon 561600 979200)
+assert_contains "pre-work reset (Mon 08:00) -> prior Friday 18:00" "$h" "756000"
+
+h=$(TZ=UTC PACE_WORK="Mon-Fri 9-18" pace_horizon 561600 932400)
+assert_contains "single-digit hours parse" "$h" "756000"
+
+h=$(TZ=UTC PACE_WORK="Sat-Sun 10-16" pace_horizon 561600 932400)
+assert_contains "weekend-worker: Sun 19:00 reset -> Sun 16:00 work-end" "$h" "$((932400 - 3*3600))"
+
+h=$(TZ=UTC PACE_WORK="garbage" pace_horizon 561600 932400) || true
+if [ -z "$h" ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); echo "FAIL: malformed PACE_WORK should yield no horizon (got: $h)"; fi
 
 echo ""
 echo "=== Context total color thresholds ==="

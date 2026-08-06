@@ -80,7 +80,7 @@ Configure via environment variables. The cleanest place is the `env` block in `s
 
 ```json
 {
-  "env": { "PACE_DEADLINE": "Fri 18:00" }
+  "env": { "PACE_WORK": "Mon-Fri 09-18" }
 }
 ```
 
@@ -88,7 +88,7 @@ Configure via environment variables. The cleanest place is the `env` block in `s
 |----------|---------|--------|
 | `CTX_BAR_WIDTH` | 8 | Cells in the context usage bar. |
 | `PACE_BAR_WIDTH` | 8 | Cells in the 7-day burn-pace meter. |
-| `PACE_DEADLINE` | — | Weekly deadline `"Ddd HH:MM"` local (e.g. `"Fri 18:00"`). The pace meter judges "will I run dry in time?" against this instead of the account reset — useful for a work account you only run Mon–Fri. It still warns if you'd run dry before the deadline, but stops penalizing you for the weekend you won't use; once past the deadline it hides until reset. |
+| `PACE_WORK` | — | Your work schedule `"<days> <start>-<end>"` local (e.g. `"Mon-Fri 09-18"`; days a range or comma list, hours 24h). The pace meter then judges "will I run dry in time?" against the last work moment before the reset instead of the reset itself — useful for a work account you only run on a schedule. It still warns if you'd run dry during work, but stops penalizing you for off-hours you won't use; and it stays correct even when the reset drifts mid-week (a reset during work hours just judges to the reset). |
 | `COMPACT_OVERHEAD` | 33000 | Tokens subtracted from the window to approximate the auto-compact threshold. |
 | `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | — | If set (e.g. `75`), treats auto-compact as that percent of the window; wins over `COMPACT_OVERHEAD`. |
 
