@@ -337,6 +337,45 @@ out=$(run 100 500 10000 200 200000)
 assert_not_contains "first call: no cache age" "$out" "0m"
 
 echo ""
+echo "=== Cache cold latch (persist through a human turn) ==="
+
+# When a human turn starts with an EXPIRED cache (idle >= 5m), the cold indicator
+# must stay visible for the whole turn — the turn's own API activity would
+# otherwise reset cache_age to 0 and flash the indicator away. State v5 field 5 is
+# the latched idle gap. Fixtures use api_ms=60000 as the pre-turn baseline.
+
+# Turn starts expired (idle 800s = 13m): latched, shown; persists once the model
+# starts working in the same turn (api_ms grows -> live cache_age would be 0).
+reset_state
+_ago=$(($(date +%s) - 800))
+echo "5|1.50|${_ago}|60000|0" > "/tmp/claude-statusline-${SESSION}"
+echo "reset" > "/tmp/claude-statusline-newround-${SESSION}"
+out=$(run 100 500 10000 200 200000 1.50 60000)
+assert_contains "expired cache shown at turn start" "$out" "13m"
+out=$(run 100 500 10000 200 200000 1.50 120000)  # model now active this turn
+assert_contains "expired cache persists through the turn" "$out" "13m"
+
+# Next turn starts warm (idle 10s): the stale latch is cleared, indicator hidden.
+reset_state
+_recent=$(($(date +%s) - 10))
+echo "5|1.50|${_recent}|60000|800" > "/tmp/claude-statusline-${SESSION}"
+echo "reset" > "/tmp/claude-statusline-newround-${SESSION}"
+out=$(run 100 500 10000 200 200000 1.50 60000)
+assert_not_contains "warm turn clears the cold latch" "$out" "13m"
+assert_not_contains "warm turn shows no cache indicator" "$out" "·"
+
+# At-risk (yellow, 240s = 4m) is NOT expired, so it does NOT latch: it shows at
+# turn start but clears once the turn's activity resets the idle clock.
+reset_state
+_ago=$(($(date +%s) - 240))
+echo "5|1.50|${_ago}|60000|0" > "/tmp/claude-statusline-${SESSION}"
+echo "reset" > "/tmp/claude-statusline-newround-${SESSION}"
+out=$(run 100 500 10000 200 200000 1.50 60000)
+assert_contains "at-risk shown at turn start" "$out" "4m"
+out=$(run 100 500 10000 200 200000 1.50 120000)  # activity, not latched
+assert_not_contains "at-risk not latched (clears on activity)" "$out" "4m"
+
+echo ""
 echo "=== Per-round cost ==="
 
 # First call with cost 1.50

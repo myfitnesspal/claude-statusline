@@ -59,8 +59,8 @@ RESET='\033[0m'
 # Bar widths, in cells. Two bars use them: the context usage bar and the 7d
 # throttle meter. Independent knobs (env-overridable) so either can be tuned
 # alone; set them equal for a matched look.
-CTX_BAR_WIDTH="${CTX_BAR_WIDTH:-10}"
-PACE_BAR_WIDTH="${PACE_BAR_WIDTH:-5}"
+CTX_BAR_WIDTH="${CTX_BAR_WIDTH:-8}"
+PACE_BAR_WIDTH="${PACE_BAR_WIDTH:-8}"
 
 # Build a bar string: `filled` solid cells (█) out of `width`, the rest empty (░).
 bar_of() {
@@ -88,28 +88,26 @@ fmt_tokens() {
 	fi
 }
 
-# State format v4: version|round_start_cost|last_activity_ts|last_api_ms
+# State format v5: version|round_start_cost|last_activity_ts|last_api_ms|cold_latch
 # last_activity_ts is the render time at which the model last hit the API (see
-# cache-age note below), NOT merely the last render. Legacy formats are still
-# read for graceful in-session upgrade:
-#   v3: 3|round_start_cost|last_ts            (last_ts treated as last activity)
-#   v2: 2|round_start_cost|msg_count|last_ts  (dropped msg count between the two)
+# cache-age note below), NOT merely the last render. cold_latch holds the idle gap
+# of a turn that started with an expired cache (see the new-round block). Legacy
+# formats are still read for graceful in-session upgrade:
+#   v4: 4|round_start_cost|last_activity_ts|last_api_ms   (no latch)
+#   v3: 3|round_start_cost|last_ts                        (last_ts treated as last activity)
+#   v2: 2|round_start_cost|msg_count|last_ts              (dropped msg count between the two)
 round_start_cost=$cost
 last_activity_ts=0
 last_api_ms=""
+cold_latch=0
 if [ -f "$STATE_FILE" ]; then
 	IFS='|' read -r _ver _rsc _f2 _f3 _f4 < "$STATE_FILE"
 	case "$_ver" in
+		5) round_start_cost=$_rsc; last_activity_ts=${_f2:-0}; last_api_ms=${_f3:-}; cold_latch=${_f4:-0} ;;
 		4) round_start_cost=$_rsc; last_activity_ts=${_f2:-0}; last_api_ms=${_f3:-} ;;
 		3) round_start_cost=$_rsc; last_activity_ts=${_f2:-0} ;;
 		2) round_start_cost=$_rsc; last_activity_ts=${_f3:-0} ;;
 	esac
-fi
-
-# If UserPromptSubmit hook signaled a new round, reset round metrics
-if [ -f "$NEWROUND_FILE" ]; then
-	round_start_cost=$cost
-	rm -f "$NEWROUND_FILE"
 fi
 
 # Cache age: seconds the model has been IDLE (predicts prompt-cache TTL expiry).
@@ -127,8 +125,19 @@ if [ -z "$last_api_ms" ] || [ "$api_ms" != "$last_api_ms" ] || [ "$last_activity
 fi
 cache_age=$((now - last_activity_ts))
 
+# New round = a fresh human turn (UserPromptSubmit hook). Reset round cost. If the
+# cache expired during the idle gap before this turn, latch that gap so the cold
+# indicator stays visible for the whole turn: the turn's own first API call resets
+# cache_age to 0, which would otherwise flash the indicator away the instant work
+# resumed. The latch clears when a turn instead starts warm (cache_age < 300).
+if [ -f "$NEWROUND_FILE" ]; then
+	round_start_cost=$cost
+	if [ "$cache_age" -ge 300 ]; then cold_latch=$cache_age; else cold_latch=0; fi
+	rm -f "$NEWROUND_FILE"
+fi
+
 # Save state
-echo "4|${round_start_cost}|${last_activity_ts}|${api_ms}" > "$STATE_FILE"
+echo "5|${round_start_cost}|${last_activity_ts}|${api_ms}|${cold_latch}" > "$STATE_FILE"
 
 # Usage snapshot for programmatic reads (agent self-throttling). Authoritative rate-limit
 # fields come straight from Claude Code's statusline input; persisted here each render so a
@@ -299,9 +308,13 @@ if [ -f "$HOME/src/claude-config/hooks/subagent-status.sh" ]; then
 	fi
 fi
 
-# Cache age indicator (hidden when warm < 3 minutes)
+# Cache age indicator (hidden when warm < 3 minutes). A latched cold turn keeps
+# its expired idle gap shown (red) for the whole turn; otherwise the live idle
+# age shows red past 5m (TTL expired) or yellow past 3m (at risk).
 cache_part=""
-if [ "$cache_age" -ge 300 ]; then
+if [ "$cold_latch" -ge 300 ]; then
+	cache_part=" · ${RED}$(fmt_duration "$cold_latch")${NORMAL}"
+elif [ "$cache_age" -ge 300 ]; then
 	cache_part=" · ${RED}$(fmt_duration "$cache_age")${NORMAL}"
 elif [ "$cache_age" -ge 180 ]; then
 	cache_part=" · ${YELLOW}$(fmt_duration "$cache_age")${NORMAL}"

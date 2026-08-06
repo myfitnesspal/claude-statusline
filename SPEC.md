@@ -28,9 +28,9 @@ O4.6 200k | 34k 17% · 12msg · 7m | 2h14m 11% · 3d5h 12% | 19m +$0.05 $0.67
 - Subagent governance status shown only when subagent hooks are installed
 
 ### Section 2: Context health
-`34k ██████░░░░ · 7m`
+`34k █████░░░ · 7m`
 
-- **Total context**: absolute token count colored by retrieval quality thresholds, followed by a **usage bar**. The bar fills to `usable_cap = min(compact_threshold, 400000)` — a full bar is that ceiling (the 400K retrieval red line, or the auto-compact threshold when it binds first). Past the ceiling the bar pegs full and gains a `▸` overflow marker. The bar inherits the token-count color (green < 120K, yellow 120-250K, orange 250-400K, red >= 400K), so on a small window a full/overflow bar can be non-red (the ceiling is the compact threshold, below 400K). Width is `CTX_BAR_WIDTH` cells (default 10).
+- **Total context**: absolute token count colored by retrieval quality thresholds, followed by a **usage bar**. The bar fills to `usable_cap = min(compact_threshold, 400000)` — a full bar is that ceiling (the 400K retrieval red line, or the auto-compact threshold when it binds first). Past the ceiling the bar pegs full and gains a `▸` overflow marker. The bar inherits the token-count color (green < 120K, yellow 120-250K, orange 250-400K, red >= 400K), so on a small window a full/overflow bar can be non-red (the ceiling is the compact threshold, below 400K). Width is `CTX_BAR_WIDTH` cells (default 8).
 - **Cache age**: time since last API call, predicts whether prompt cache is warm. Hidden when < 3 minutes (cache warm). Shown yellow at 3-5 minutes (at risk), red > 5 minutes (cold, ~5 minute TTL expired).
 - Output tokens are NOT shown — they aren't in context yet (will fold in on next call)
 
@@ -55,7 +55,7 @@ O4.6 200k | 34k 17% · 12msg · 7m | 2h14m 11% · 3d5h 12% | 19m +$0.05 $0.67
 The compact percentage tells you when auto-compact fires, but says nothing about retrieval quality. Research (MRCR v2 benchmarks, practitioner needle tests) shows retrieval degrades at specific absolute token thresholds regardless of window size. A 200K session on a 1M window has the same retrieval quality as 200K on a 200K window. The usage is shown as a bar (see below); its color, keyed to absolute token count, carries the retrieval-quality signal while the bar length carries the how-close-to-the-ceiling signal.
 
 ### Context usage shown as a bar
-The usage percentage is drawn as a fixed-width bar rather than a number. A number invites arithmetic ("42% of what?"); a bar shows headroom at a glance. The bar scales to `usable_cap = min(compact_threshold, 400000)` so a full bar always means "at the wall that binds first" — the 400K retrieval red line on a large window, or the auto-compact threshold on a small one. Overflow past the ceiling pegs the bar full and adds a `▸` marker so the over-limit state stays visible instead of saturating silently. Color is decoupled from length (absolute token thresholds), so the two degradation signals — retrieval quality and proximity to the ceiling — read independently. Bar cells are set by `CTX_BAR_WIDTH` (default 10); the 7d throttle meter has its own `PACE_BAR_WIDTH` (default 5) so the two bars can be tuned independently or matched.
+The usage percentage is drawn as a fixed-width bar rather than a number. A number invites arithmetic ("42% of what?"); a bar shows headroom at a glance. The bar scales to `usable_cap = min(compact_threshold, 400000)` so a full bar always means "at the wall that binds first" — the 400K retrieval red line on a large window, or the auto-compact threshold on a small one. Overflow past the ceiling pegs the bar full and adds a `▸` marker so the over-limit state stays visible instead of saturating silently. Color is decoupled from length (absolute token thresholds), so the two degradation signals — retrieval quality and proximity to the ceiling — read independently. Bar cells are set by `CTX_BAR_WIDTH` (default 8); the 7d throttle meter has its own `PACE_BAR_WIDTH` (default 8) so the two bars can be tuned independently or matched.
 
 ### Message count removed
 An earlier version showed a colored user-message count as a second degradation axis (multi-turn reliability decay). It was dropped: the number wasn't actionable in practice — token volume already carries the "how loaded is this session" signal, and message count added a competing indicator without changing what the user does about it. The per-round cost reset still keys off the same `UserPromptSubmit` marker; only the display and its state field were removed.
@@ -67,6 +67,8 @@ Per-round input size is not an independent degradation factor. A single turn loa
 A session-averaged cache hit percentage isn't actionable. What matters is whether the cache is warm right now, which predicts whether the next message will be fast and cheap or slow and expensive. The ~5 minute TTL means a timer since the last API call is the most predictive signal.
 
 The age is measured from the last **API activity**, not the last render. The statusline re-renders at the end of a turn too, so a render-to-render timer counted a long busy turn as idle cooling time — the indicator flashed stale for one frame right as a turn finished, then cleared on the next render. Instead, `last_activity_ts` only advances when `cost.total_api_duration_ms` grew since the previous render (the model actually hit the API). While the model works, `api_ms` climbs and the age stays 0; it accumulates only during genuine idle. A missing baseline (fresh state or a legacy-format upgrade) counts as activity so the session starts warm rather than falsely stale.
+
+**Cold latch — persist through a human turn.** Activity-gating fixed the turn-*end* flash but left a turn-*start* one: when you return after a break, the first render shows the cold cache, but that turn's own first API call resets `cache_age` to 0 and clears the indicator before you register it. So a new round (UserPromptSubmit) that starts with an expired cache (`cache_age >= 300`) latches the idle gap into `cold_latch`; the display shows that frozen gap (red) for the whole turn regardless of the turn's own activity, and the latch clears when a turn instead starts warm. This keeps the "you came back to a cold cache, this turn paid for it" signal on screen for the one human turn where it matters.
 
 ### Round boundaries are set by UserPromptSubmit hook
 `round-reset.sh` creates a marker file on each user prompt. The statusline resets round cost when it sees this marker.
@@ -134,11 +136,12 @@ From the `StatuslineUpdate` hook payload (dumped via `jq . > /tmp/debug.json`):
 ## State Management
 
 State file: `/tmp/claude-statusline-{session_id}`
-Format (v4): `4|round_start_cost|last_activity_ts|last_api_ms`
+Format (v5): `5|round_start_cost|last_activity_ts|last_api_ms|cold_latch`
 
 - Version prefix distinguishes formats; unrecognized/old state files are reset on read.
-- Legacy formats are still read for graceful in-session upgrade: v3 `3|round_start_cost|last_ts` (its `last_ts` is treated as `last_activity_ts`), and v2 `2|round_start_cost|msg_count|last_ts` (the dropped message count sat between `round_start_cost` and `last_ts`).
+- Legacy formats are still read for graceful in-session upgrade: v4 `4|round_start_cost|last_activity_ts|last_api_ms` (no latch), v3 `3|round_start_cost|last_ts` (its `last_ts` is treated as `last_activity_ts`), and v2 `2|round_start_cost|msg_count|last_ts` (the dropped message count sat between `round_start_cost` and `last_ts`).
 - `last_activity_ts` is the epoch timestamp of the render at which the model last hit the API; `last_api_ms` is the `total_api_duration_ms` seen then. Together they let the next render tell busy time from idle time when computing cache age.
+- `cold_latch` is the idle gap (seconds) of a turn that started with an expired cache, or 0. It holds the cold indicator on screen for the whole turn; it is set/cleared at each new-round boundary.
 
 New-round marker: `/tmp/claude-statusline-newround-{session_id}`
 Created by `round-reset.sh` on `UserPromptSubmit` hook, consumed by statusline on next update.
@@ -159,6 +162,6 @@ Approximated as `ctx_max - 33000`. Override with `COMPACT_OVERHEAD` env var.
 |----------|---------|--------|
 | `COMPACT_OVERHEAD` | 33000 | Tokens subtracted from the window to approximate the auto-compact threshold. |
 | `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | unset | If set (e.g. 75), treats the auto-compact threshold as that percent of the window; wins over `COMPACT_OVERHEAD`. |
-| `CTX_BAR_WIDTH` | 10 | Cells in the context usage bar. |
-| `PACE_BAR_WIDTH` | 5 | Cells in the 7d throttle meter. |
+| `CTX_BAR_WIDTH` | 8 | Cells in the context usage bar. |
+| `PACE_BAR_WIDTH` | 8 | Cells in the 7d throttle meter. |
 | `CLAUDE_JSON_PATH` | `~/.claude.json` | Credential file the auth/plan letter reads (tests point it at fixtures). |
