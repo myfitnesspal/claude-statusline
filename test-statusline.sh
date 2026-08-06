@@ -234,10 +234,11 @@ out=$(STATUSLINE_CTX_BAR_WIDTH=4 run 130000 0 0 0 1000000)
 assert_contains "STATUSLINE_CTX_BAR_WIDTH=4 yields a 4-cell bar" "$out" "█░░░"
 assert_not_contains "STATUSLINE_CTX_BAR_WIDTH=4 is not the default width" "$out" "██████████"
 
-# STATUSLINE_PACE_BAR_WIDTH changes the 7d pace-meter length. Half-elapsed window at 50%
-# used -> exactly on pace -> empty meter of the given width.
+# STATUSLINE_PACE_BAR_WIDTH changes the 7d pace-meter length. Half-elapsed window at
+# 50% used -> exactly on pace -> empty meter; STATUSLINE_PACE_SHOW_CALM=true forces
+# the otherwise-hidden calm bar so its width is visible.
 reset_state
-out=$(pace_json 50 302400 | STATUSLINE_PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+out=$(pace_json 50 302400 | STATUSLINE_PACE_SHOW_CALM=true STATUSLINE_PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
 assert_contains "STATUSLINE_PACE_BAR_WIDTH=8 yields an 8-cell meter" "$out" "░░░░░░░░"
 
 echo ""
@@ -250,15 +251,21 @@ echo "=== 7d pace meter (gas-pedal urgency) ==="
 YEL=$'\033[33m'; ORG=$'\033[38;5;208m'; RD=$'\033[31m'; BLU=$'\033[38;5;33m'
 pace_lin(){ pace_json "$1" 302400 | STATUSLINE_PACE_GAMMA=1 STATUSLINE_PACE_BAR_WIDTH=8 bash "$STATUSLINE"; }
 
-# On pace: 50% used at half-elapsed -> r=1 -> empty.
+# On pace: 50% used at half-elapsed -> r=1 -> calm -> hidden by default.
 reset_state
 out=$(pace_lin 50 | strip_ansi)
-assert_contains "on pace: empty meter" "$out" "50% ░░░░░░░░"
+assert_contains "on pace: 7d percent still shown" "$out" "50%"
+assert_not_contains "on pace: meter hidden (no empty bar)" "$out" "50% ░"
 
-# Dead-band: 52% -> urgency ~76 permille < STATUSLINE_PACE_TOL(100) -> still empty.
+# STATUSLINE_PACE_SHOW_CALM=true renders the empty calm bar instead of hiding it.
+reset_state
+out=$(pace_json 50 302400 | STATUSLINE_PACE_SHOW_CALM=true STATUSLINE_PACE_GAMMA=1 STATUSLINE_PACE_BAR_WIDTH=8 bash "$STATUSLINE" | strip_ansi)
+assert_contains "SHOW_CALM shows the empty on-pace bar" "$out" "50% ░░░░░░░░"
+
+# Dead-band: 52% -> urgency ~76 permille < STATUSLINE_PACE_TOL(100) -> calm -> hidden.
 reset_state
 out=$(pace_lin 52 | strip_ansi)
-assert_contains "within tolerance: empty meter" "$out" "52% ░░░░░░░░"
+assert_not_contains "within tolerance: meter hidden" "$out" "52% ░"
 
 # Hot, escalating by urgency: 55% -> 1 (yellow), 65% -> 3 (orange), 80% -> 6 (red).
 reset_state

@@ -413,8 +413,10 @@ fmt_pace() {
 	fi
 
 	if [ "$cells" -eq 0 ]; then
-		# On pace (within tolerance): neutral, empty.
-		printf ' %b%b' "${NORMAL}$(bar_of 0 "$w")" "$NORMAL"
+		# On pace (within tolerance): calm. Hidden by default so the meter only appears
+		# when it's saying something; set STATUSLINE_PACE_SHOW_CALM=true to show the
+		# empty neutral bar instead.
+		[ "${STATUSLINE_PACE_SHOW_CALM:-false}" = "true" ] && printf ' %b%b' "${NORMAL}$(bar_of 0 "$w")" "$NORMAL"
 	elif [ "$hot" -eq 1 ]; then
 		# Too hot: fills from the left, yellow -> orange -> red by magnitude.
 		color="$YELLOW"; [ "$cells" -ge 3 ] && color="$ORANGE"; [ "$cells" -ge 6 ] && color="$RED"

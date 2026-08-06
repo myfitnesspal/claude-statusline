@@ -40,7 +40,7 @@ O4.6 200k | 34k 17% · 12msg · 7m | 2h14m 11% · 3d5h 12% | 19m +$0.05 $0.67
 - Dot separator between the two limits
 - Color-coded: green < 50%, yellow 50-79%, red >= 80%
 - Only shown when rate limit data is available (Pro/Max subscribers)
-- The 7-day limit is followed by a **bidirectional pace meter** (see below): it flags both burning too fast (you'll wall before the window/horizon) and too slow (you'll leave weekly budget unused, which is lost at reset). Empty = on pace.
+- The 7-day limit is followed by a **bidirectional pace meter** (see below): it flags both burning too fast (you'll wall before the window/horizon) and too slow (you'll leave weekly budget unused, which is lost at reset). Hidden when on pace by default, so it only appears when it has something to say.
 
 ### Section 4: Cost and timing
 `19m +$0.05 $0.67`
@@ -158,6 +158,7 @@ Approximated as `ctx_max - 33000`. Override with `STATUSLINE_COMPACT_OVERHEAD` e
 | `STATUSLINE_PACE_BAR_WIDTH` | 8 | Cells in the 7d pace meter. |
 | `STATUSLINE_PACE_TOL` | 10 | On-pace dead-band as a percent of urgency (0-100): urgency below it reads as an empty (neutral) meter. |
 | `STATUSLINE_PACE_GAMMA` | 1.5 | Response curve above the dead-band. `1` linear; `1.5` (default) / `2` / `3` keep the calm end flatter, ramping up only as correcting gets urgent. |
+| `STATUSLINE_PACE_SHOW_CALM` | false | When on-pace (calm), the meter is hidden by default so it only appears when it has something to say. Set `true` to always render the empty neutral bar. |
 | `STATUSLINE_PACE_WORK` | unset | Your weekly work schedule (`"<days> <start>-<end>"` local 24h, e.g. `"Mon-Fri 09-18"`; days a range like `Mon-Fri` or a comma list like `Mon,Wed,Fri`; hours `HH` or `HH:MM`). The 7d pace meter judges pace against your work schedule instead of the reset (see below). Unset = judge to the reset. |
 | `STATUSLINE_PACE_HORIZON_TS` | unset | Absolute-epoch override of the computed horizon (advanced / tests). Takes precedence over `STATUSLINE_PACE_WORK`. |
 | `STATUSLINE_JSON_PATH` | `~/.claude.json` | Credential file the auth/plan letter reads (tests point it at fixtures). |
@@ -171,13 +172,13 @@ wall = (100 - used%) * elapsed / used%     # seconds until you'd hit 100% at the
 r    = time-to-horizon / wall              # r=1 on pace, >1 too hot, <1 too cold
 ```
 
-- **On pace** (`r ≈ 1`): empty, neutral grey.
+- **On pace** (`r ≈ 1`): hidden by default (or an empty neutral bar with `STATUSLINE_PACE_SHOW_CALM=true`).
 - **Too hot** (`r > 1`, pressing harder than cruise — you'd wall before the horizon): fills from the **left**, escalating **yellow → orange → red**. A full red bar means back off hard; no overflow marker (being further over doesn't change the action).
 - **Too cold** (`r < 1`, pressing softer than cruise — you'd reach the horizon with budget unused): fills from the **right** in **blue**. `1/r` is literally "how much harder you'd need to press to not waste." It never escalates — leaving budget on the table is a milder, cliff-free cost.
 
 **The fill is urgency, not raw deviation**, which is the key property: it is *time-aware*. The fill is the fraction of your remaining slack you've used up (`(remaining - wall)/remaining` hot, `(wall - remaining)/wall` cold), so it stays near-empty early — when there's plenty of time to correct — and rises toward the horizon. A *steady* off-pace burn (the common case) therefore sits calm most of the week and only fills when scaling back or flooring it is actually urgent, rather than parking at a constant fill all week the way a raw-deviation meter would.
 
-`STATUSLINE_PACE_TOL` is the on-pace dead-band (percent of urgency); above it, urgency is shaped by `STATUSLINE_PACE_GAMMA` (`1` linear, `1.5` default and up keep the calm end flatter) and mapped to `STATUSLINE_PACE_BAR_WIDTH` cells. Hot color steps at ≥3 cells (orange) and ≥6 (red). There is deliberately **no "used >= 90% → red" rule**: the urgency subsumes it — 95% used mid-window has an imminent wall (hot), while 95% used near the reset has `r ≈ 1` (on pace, you used it well), which such a rule would have wrongly alarmed.
+`STATUSLINE_PACE_TOL` is the on-pace dead-band (percent of urgency); above it, urgency is shaped by `STATUSLINE_PACE_GAMMA` (`1` linear, `1.5` default and up keep the calm end flatter) and mapped to `STATUSLINE_PACE_BAR_WIDTH` cells. Hot color steps at ≥3 cells (orange) and ≥6 (red). When on-pace (calm), the meter is **hidden by default** (`STATUSLINE_PACE_SHOW_CALM=true` to render the empty neutral bar instead) so it only appears when it's saying something. There is deliberately **no "used >= 90% → red" rule**: the urgency subsumes it — 95% used mid-window has an imminent wall (hot), while 95% used near the reset has `r ≈ 1` (on pace, you used it well), which such a rule would have wrongly alarmed.
 
 ### 7d pace work schedule
 
