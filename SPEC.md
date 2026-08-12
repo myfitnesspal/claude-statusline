@@ -25,7 +25,6 @@ O4.6 200k | 34k 17% · 12msg · 7m | 2h14m 11% · 3d5h 12% | 19m +$0.05 $0.67
 - Context window size appended (e.g. 200k, 1M) — detected from JSON `context_window.context_window_size`
 - Auth/plan mode as a single uncolored letter. `K` = `ANTHROPIC_API_KEY` in the process env (pay-per-token API billing). Otherwise the letter reflects `oauthAccount.organizationType` in `~/.claude.json`: `M` = `claude_max`, `P` = `claude_pro`, `T` = `claude_team`, `E` = `claude_enterprise`, and `A` = any other non-empty org type (unknown/fallback). Hidden when logged out with no key. The env var wins because Claude Code prefers an approved `ANTHROPIC_API_KEY` over the stored OAuth login; a session where the key is present but was declined at the approval prompt shows `K` anyway (accepted inaccuracy — the payload carries no auth field). `STATUSLINE_JSON_PATH` overrides the credential file location for tests.
 - Location shown only when cwd differs from project root, or agent/worktree active
-- Subagent governance status shown only when subagent hooks are installed
 
 ### Section 2: Context health
 `34k █████░░░`
