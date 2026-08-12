@@ -442,27 +442,9 @@ location=""
 [ -n "$worktree_name" ] && location="${location:+${location} }${worktree_name}"
 [ "$cwd" != "$project_dir" ] && [ -z "$worktree_name" ] && location="${cwd##*/}"
 
-# Subagent governance status (optional, no-op if not installed)
-sa_status=""
-if [ -f "$HOME/src/claude-config/hooks/subagent-status.sh" ]; then
-	sa_state_file="/tmp/claude-subagent-state-${session_id}"
-	if [ -f "$sa_state_file" ]; then
-		if grep -q "^disabled$" "$sa_state_file" 2>/dev/null; then
-			sa_status="${NORMAL}[sa:off]"
-		else
-			sa_status="${GREEN}[sa:on]"
-		fi
-	elif [ -f "$HOME/src/claude-config/subagents-disabled" ]; then
-		sa_status="${NORMAL}[sa:off]"
-	else
-		sa_status="${GREEN}[sa:on]"
-	fi
-fi
-
 parts="${NORMAL}${short_model}"
 [ -n "$auth_letter" ] && parts="${parts} ${auth_letter}"
 [ -n "$location" ] && parts="${parts} ${location}"
-[ -n "$sa_status" ] && parts="${parts} ${sa_status}${NORMAL}"
 parts="${parts} |"
 parts="${parts} ${ctx_color}$(fmt_tokens "$ctx_tokens") ${ctx_bar}${NORMAL}"
 api_secs=$((api_ms / 1000))
