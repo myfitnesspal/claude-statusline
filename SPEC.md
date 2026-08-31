@@ -190,6 +190,25 @@ the same path, which is why the parse validates for a known window key before
 extracting: an unvalidated parse would quietly write an empty bucket list and the
 field would vanish while looking healthy.
 
+### What drives the refresher
+
+Nothing else does, so a render starts it. When the cached `checked_at` has aged
+past `STATUSLINE_MODEL_USAGE_TTL` (default 300 seconds), including the first render
+when there is no cache at all, the statusline spawns the refresher detached with its
+output discarded. The render itself never waits.
+
+The spawn keys on `checked_at`, not `ts`. A refresher that keeps failing therefore
+retries once per TTL rather than once per render, while the field still hides itself
+as soon as the data ages past `STATUSLINE_MODEL_USAGE_MAX_AGE`.
+
+`STATUSLINE_MODEL_USAGE_REFRESH=false` opts out of the network call entirely.
+Cached buckets still render, so the switch stops fetching without blanking the field.
+
+The spawn resolves its own path through symlinks, because `install.sh` links the
+statusline into `~/.claude` while the refresher stays a sibling in the repo. No
+install step is needed for the refresher: it is found relative to the resolved
+script, not the link.
+
 Concurrent sessions each spawn their own refresher, so the cache write is a
 rename from a pid-suffixed tmp file, and a `mkdir` lock beside the cache admits one
 fetch at a time. A lock older than 120 seconds is treated as abandoned.
@@ -223,6 +242,9 @@ Approximated as `ctx_max - 33000`. Override with `STATUSLINE_COMPACT_OVERHEAD` e
 | `STATUSLINE_PACE_HORIZON_TS` | unset | Absolute-epoch override of the computed horizon (advanced / tests). Takes precedence over `STATUSLINE_PACE_WORK`. |
 | `STATUSLINE_JSON_PATH` | `~/.claude.json` | Credential file the auth/plan letter reads (tests point it at fixtures). |
 | `STATUSLINE_MODEL_BAR_WIDTH` | 8 | Cells in each per-model weekly usage bar. |
+| `STATUSLINE_MODEL_USAGE_TTL` | 300 | Seconds since the last fetch attempt before a render spawns the refresher again. |
+| `STATUSLINE_MODEL_USAGE_REFRESH` | true | Set `false` (or `0`, `no`) to stop spawning the refresher. Cached buckets still render. |
+| `STATUSLINE_MODEL_USAGE_REFRESHER` | the repo's `model-usage-refresh.sh` | Refresher path (tests point it at a stub). |
 | `STATUSLINE_MODEL_USAGE_MAX_AGE` | 3600 | Seconds of cached-data age past which the per-model field is hidden rather than shown stale. |
 | `STATUSLINE_MODEL_USAGE_CACHE` | `~/.claude-statusline/model-usage.json` | Per-model weekly usage cache the refresher writes and the statusline reads. |
 | `STATUSLINE_MODEL_USAGE_FIXTURE` | unset | Refresher reads this saved response body instead of calling the API (tests, debugging). |

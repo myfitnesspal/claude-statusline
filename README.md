@@ -91,6 +91,8 @@ Configure via environment variables. The cleanest place is the `env` block in `s
 | `STATUSLINE_PACE_SHOW_ON_PACE` | false | By default the pace meter is hidden when you're on pace (shows only when it has something to say). Set `true` to always render it. |
 | `STATUSLINE_PACE_SHOW_COLD` | false | The cold/under-pace side ("you'll leave budget unused") is off by default, so you're only warned about burning too fast. Set `true` to also be warned about under-use. |
 | `STATUSLINE_PACE_WORK` | — | Your work schedule `"<days> <start>-<end>"` local (e.g. `"Mon-Fri 09-18"`; days a range or comma list, hours 24h). The pace meter then judges "will I run dry in time?" against the last work moment before the reset instead of the reset itself — useful for a work account you only run on a schedule. It still warns if you'd run dry during work, but stops penalizing you for off-hours you won't use; and it stays correct even when the reset drifts mid-week (a reset during work hours just judges to the reset). |
+| `STATUSLINE_MODEL_USAGE_TTL` | 300 | Seconds since the last fetch attempt before a render refreshes the per-model buckets again. |
+| `STATUSLINE_MODEL_USAGE_REFRESH` | true | Set `false` to stop the background fetch entirely. Cached buckets still render. |
 | `STATUSLINE_MODEL_BAR_WIDTH` | 8 | Cells in each per-model weekly usage bar. |
 | `STATUSLINE_MODEL_USAGE_MAX_AGE` | 3600 | Seconds of cached-data age past which the per-model field hides itself instead of showing a stale number. |
 | `STATUSLINE_MODEL_USAGE_CACHE` | `~/.claude-statusline/model-usage.json` | Where the per-model weekly usage cache lives. |
