@@ -217,6 +217,42 @@ The block records the `accountUuid` it describes. After an account switch it
 describes someone else's usage, so a mismatch against `oauthAccount.accountUuid`
 drops it rather than rendering the wrong numbers.
 
+### The cached block is untrusted data
+
+Every value in `cachedUsageUtilization` is written by another program and can
+carry anything the usage endpoint returned. The bucket read therefore treats the
+block as hostile input rather than as a trusted local file, on three axes.
+
+**The model name is reduced to one character before it reaches the renderer.**
+The `jq` pass emits its facts as one newline-delimited stream of `tag:value`
+lines, which the shell loop below it parses by tag. A newline inside
+`scope.model.display_name` starts a line that loop reads as another tag, so the
+server controls a channel it was never meant to reach. Two demonstrated
+consequences: a name of `Fable\norg:claude_enterprise` rewrote the auth letter,
+and a name carrying `\nfetched:<recent>` forged the cache timestamp and defeated
+both staleness thresholds at once, using data from the very file they guard.
+
+The fix is `gsub("[^A-Za-z0-9]"; "") | ascii_upcase` followed by `[0:1]`, applied
+inside `jq` before the value is emitted. One uppercase alphanumeric character is
+all the renderer uses, and no newline, tab, colon, or escape byte survives it.
+That removes the class rather than patching the instance, which is why the fix
+lives at the read rather than at each field that could be forged. A future edit
+that loosens the character class, or that moves the sanitization downstream of
+the emit, reopens the channel.
+
+**A non-numeric percentage drops the bucket instead of defaulting to zero.**
+`jq` emits the sentinel `x` when `.percent` is not a number, and the loop's
+existing numeric guard then skips that row. Defaulting to `0` would print `F 0%`,
+inventing the most reassuring possible value for a number you throttle against.
+Rendering nothing is honest, because an absent field reads as "no reading" while
+a wrong field reads as a reading.
+
+**A timestamp in the future hides the field.** `fetchedAtMs` is compared against
+the render's own clock, and a negative age returns early. Without that check,
+clock skew makes both threshold comparisons false, which buys exactly the
+reads-as-current outcome the two constants exist to prevent. The guard is
+therefore load-bearing for the staleness policy rather than defensive tidying.
+
 ### Staleness follows Claude Code's own two constants
 
 The cache can be an hour behind, so this field needs a staleness policy that the
