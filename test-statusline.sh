@@ -748,7 +748,19 @@ mu_json_write 60 "$FABLE_ONLY"
 out=$(pace_json 65 302400 \
 	| STATUSLINE_JSON_PATH="$MU_J_FIXTURE" STATUSLINE_PACE_GAMMA=1 STATUSLINE_PACE_BAR_WIDTH=8 \
 	  bash "$STATUSLINE" | strip_ansi)
-assert_contains "the bucket sits between the 7d number and the pace meter" "$out" "65% · F 50% ███░░░░░"
+assert_contains "the bucket sits between the 7d number and the pace meter" "$out" "65% · F 50% · ███░░░░░"
+assert_not_contains "a dot separates the bucket from the meter" "$out" "F 50% ███"
+
+# The separator is conditional on the meter actually rendering. The meter hides
+# whenever the burn is on pace, which is the common case, so a dot keyed only to the
+# bucket's presence would leave a trailing separator with nothing after it. Here the
+# bucket renders and the meter is hidden by default.
+reset_state
+mu_json_write 60 "$FABLE_ONLY"
+out=$(pace_json 50 302400 | STATUSLINE_JSON_PATH="$MU_J_FIXTURE" STATUSLINE_PACE_GAMMA=1 \
+	bash "$STATUSLINE" | strip_ansi)
+assert_contains "the bucket renders with the meter hidden" "$out" "F 50%"
+assert_not_contains "a hidden meter leaves no trailing separator" "$out" "F 50% ·"
 
 # With no bucket the meter still follows the 7d number directly, so the field's
 # absence leaves no gap or stray separator.
