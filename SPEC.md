@@ -173,8 +173,7 @@ window reaches the hook, so the buckets `/usage` renders as `Current week (Fable
 are not available from the payload at all.
 
 They are already on disk. Claude Code caches the entire usage response body in
-`~/.claude.json` under `cachedUsageUtilization`, and refreshes it with its own
-background polling:
+`~/.claude.json` under `cachedUsageUtilization`:
 
 ```json
 { "cachedUsageUtilization": {
@@ -229,11 +228,23 @@ cutoff at all displayed 4% while the real bucket sat at 21%, because the block w
 minutes old. The age is what makes the difference visible; the cutoff is what stops
 the number being wrong. Neither alone was enough.
 
-This also bounds what the field can be. It reports the account's weekly usage as of
-up to an hour ago, and says how long ago when that is more than five minutes. It is
-not a live reading, and no local source offers one: the endpoint is throttled per
-account, the rate-limit headers that arrive fresh on every request carry no per-model
-window, and the only other mirror of this data lives in Claude Code's process memory.
+### What refreshes the block, and what that makes this field
+
+Nothing refreshes it in the background. The write happens on one path only, when a
+usage fetch succeeds, and that path has exactly two entry points: the `/usage`
+command and an SDK `get_usage` request. There is no poller.
+
+So the field carries the reading from your last `/usage` run, stamped with its age,
+and disappears an hour later. Running `/usage` is what brings it back.
+
+That bounds what this field can be, and no local source does better:
+
+- The endpoint is rate limited per account on an hours-scale window.
+- The rate-limit headers that arrive fresh on every request carry the 5-hour and
+  7-day windows only, with no per-model bucket. Claude Code's own fallback path
+  confirms this: when a usage fetch fails it reconstructs `five_hour` and
+  `seven_day` from those headers and nothing else.
+- The only other mirror of the per-model data lives in Claude Code's process memory.
 
 ### Why the statusline does not fetch this itself
 
