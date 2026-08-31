@@ -1135,8 +1135,12 @@ else
 	diff <(printf '%s\n' "$demo_readme") <(printf '%s\n' "$demo_generated") | head -12
 fi
 
-# The generator must not touch the real usage history: it renders many statuslines,
-# and each render appends a snapshot under $HOME.
+# This pins that the generator produced output, and nothing more. It does NOT
+# test demo.sh's HOME isolation, and no test in this file can: the suite exports
+# its own throwaway HOME at the top, which masks the loss of demo.sh's. Deleting
+# demo.sh's own `export HOME` leaves the whole suite green (measured 2026-08-31),
+# while `bash demo.sh` run directly then appends to the real usage history. That
+# guard is covered by reading demo.sh, not by this check.
 if printf '%s' "$demo_generated" | grep -q 'O4.6 200k'; then
 	PASS=$((PASS + 1))
 else
