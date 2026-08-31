@@ -43,6 +43,7 @@ export STATUSLINE_JSON_PATH="$AUTH_JSON_DIR/logged-out.json"
 cleanup() {
 	rm -f "/tmp/claude-statusline-${SESSION}"
 	rm -f "/tmp/claude-statusline-newround-${SESSION}"
+	rm -rf "/tmp/claude-usage-${SESSION}.json"
 	rm -rf "$AUTH_JSON_DIR"
 }
 trap cleanup EXIT
@@ -802,6 +803,106 @@ out=$(mock_json 100 500 10000 200 200000 \
 assert_not_contains "no plan limits hides the model bucket too" "$out" "F 50%"
 
 rm -rf "$MU_J_DIR"
+
+echo ""
+echo "=== Usage-history append creates its own directory ==="
+
+# The history append is what fit-budget.py reads. Its directory is not created by
+# anything else, so a machine that has never had it silently lost every line: the
+# redirection failed, and `2>/dev/null` sat on printf rather than on the redirect,
+# so the shell's error went to the terminal on every single render.
+
+MU_H_HOME="/tmp/claude-statusline-histtest-$$"
+rm -rf "$MU_H_HOME"
+mkdir -p "$MU_H_HOME"
+
+hist_run() {
+	mock_json 100 500 10000 200 200000 \
+		| env HOME="$MU_H_HOME" STATUSLINE_JSON_PATH="$AUTH_JSON_DIR/logged-out.json" \
+		  bash "$STATUSLINE" > /dev/null 2>"$MU_H_HOME/stderr.txt"
+}
+
+reset_state
+hist_run
+if [ -s "$MU_H_HOME/.claude-statusline/usage-history.jsonl" ]; then
+	PASS=$((PASS + 1))
+else
+	FAIL=$((FAIL + 1))
+	echo "FAIL: the first render creates the usage-history file"
+fi
+
+hist_err=$(cat "$MU_H_HOME/stderr.txt" 2>/dev/null)
+if [ -z "$hist_err" ]; then
+	PASS=$((PASS + 1))
+else
+	FAIL=$((FAIL + 1))
+	echo "FAIL: a render writes nothing to stderr"
+	echo "  got: $hist_err"
+fi
+
+# Appending, not truncating: a second render adds a line rather than replacing one.
+reset_state
+hist_run
+hist_lines=$( (wc -l < "$MU_H_HOME/.claude-statusline/usage-history.jsonl" 2>/dev/null || echo 0) | tr -d ' ')
+if [ "${hist_lines:-0}" -eq 2 ] 2>/dev/null; then
+	PASS=$((PASS + 1))
+else
+	FAIL=$((FAIL + 1))
+	echo "FAIL: the second render appends (expected 2 lines, got ${hist_lines:-0})"
+fi
+
+# Each line is the parseable snapshot fit-budget.py expects.
+hist_last=$(tail -1 "$MU_H_HOME/.claude-statusline/usage-history.jsonl" 2>/dev/null || echo "")
+if printf '%s' "$hist_last" | jq -e '.session_id and .ts and (.cost_usd != null)' >/dev/null 2>&1; then
+	PASS=$((PASS + 1))
+else
+	FAIL=$((FAIL + 1))
+	echo "FAIL: each history line is a parseable snapshot"
+	echo "  got: $hist_last"
+fi
+
+# A failing redirect must stay silent. The file itself is made unwritable, not its
+# directory: appending to an existing file needs write permission on the FILE, so a
+# read-only directory does not fail the redirect and would not exercise this at all.
+# The suppression has to sit on the redirect, since the shell reports the failure,
+# not printf.
+reset_state
+chmod 000 "$MU_H_HOME/.claude-statusline/usage-history.jsonl" 2>/dev/null || true
+hist_out=$(mock_json 100 500 10000 200 200000 \
+	| env HOME="$MU_H_HOME" STATUSLINE_JSON_PATH="$AUTH_JSON_DIR/logged-out.json" \
+	  bash "$STATUSLINE" 2>"$MU_H_HOME/stderr2.txt" | strip_ansi)
+chmod 644 "$MU_H_HOME/.claude-statusline/usage-history.jsonl" 2>/dev/null || true
+assert_contains "an unwritable history file still renders the line" "$hist_out" "200k |"
+hist_err2=$(cat "$MU_H_HOME/stderr2.txt" 2>/dev/null || echo "")
+if [ -z "$hist_err2" ]; then
+	PASS=$((PASS + 1))
+else
+	FAIL=$((FAIL + 1))
+	echo "FAIL: a failing history write says nothing on stderr"
+	echo "  got: $hist_err2"
+fi
+
+# The per-session snapshot write carries the same misplaced-suppression hazard, so
+# it gets the same check. A directory standing where the file goes makes the `>`
+# redirect fail without touching anything else.
+reset_state
+rm -f "/tmp/claude-usage-${SESSION}.json"
+mkdir -p "/tmp/claude-usage-${SESSION}.json"
+hist_out=$(mock_json 100 500 10000 200 200000 \
+	| env HOME="$MU_H_HOME" STATUSLINE_JSON_PATH="$AUTH_JSON_DIR/logged-out.json" \
+	  bash "$STATUSLINE" 2>"$MU_H_HOME/stderr3.txt" | strip_ansi)
+rmdir "/tmp/claude-usage-${SESSION}.json" 2>/dev/null || true
+assert_contains "a failing snapshot write still renders the line" "$hist_out" "200k |"
+hist_err3=$(cat "$MU_H_HOME/stderr3.txt" 2>/dev/null || echo "")
+if [ -z "$hist_err3" ]; then
+	PASS=$((PASS + 1))
+else
+	FAIL=$((FAIL + 1))
+	echo "FAIL: a failing snapshot write says nothing on stderr"
+	echo "  got: $hist_err3"
+fi
+
+rm -rf "$MU_H_HOME"
 
 echo ""
 echo "=== Results ==="
