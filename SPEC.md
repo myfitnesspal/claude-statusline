@@ -8,12 +8,7 @@
 
 Example:
 ```
-O4.6 200k | 34k 17% · 12msg | 2h14m 11% · 3d5h 12% | 19m +$0.05 $0.67
-```
-
-With stale cache:
-```
-O4.6 200k | 34k 17% · 12msg · 7m | 2h14m 11% · 3d5h 12% | 19m +$0.05 $0.67
+O4.6 200k | 34k █████░░░ | 2h14m 11% · 3d5h 12% · F 4% ░░░░░░░░ | 19m +$0.05 $0.67
 ```
 
 ## Sections
@@ -33,13 +28,14 @@ O4.6 200k | 34k 17% · 12msg · 7m | 2h14m 11% · 3d5h 12% | 19m +$0.05 $0.67
 - Output tokens are NOT shown — they aren't in context yet (will fold in on next call)
 
 ### Section 3: Rate limits
-`2h14m 11% · 3d5h 12%`
+`2h14m 11% · 3d5h 12% · F 4% ░░░░░░░░`
 
 - 5-hour and 7-day rate limit usage with time until reset
 - Dot separator between the two limits
-- Color-coded: green < 50%, yellow 50-79%, red >= 80%
+- Color-coded: gray < 50%, yellow 50-79%, red >= 80%
 - Only shown when rate limit data is available (Pro/Max subscribers)
 - The 7-day limit is followed by a **bidirectional pace meter** (see below): it flags both burning too fast (you'll wall before the window/horizon) and too slow (you'll leave weekly budget unused, which is lost at reset). Hidden when on pace by default, so it only appears when it has something to say.
+- **Per-model weekly buckets** come last, one field each: the model's initial, its weekly percentage, and a bar scaled 0-100% of that bucket. `F 4% ░░░░░░░░` is the `Current week (Fable)` row from `/usage`. These are fetched out of band (see Per-Model Weekly Usage); the field is hidden when there is no bucket or the cached data is stale. Bar width is `STATUSLINE_MODEL_BAR_WIDTH` cells (default 8).
 
 ### Section 4: Cost and timing
 `19m +$0.05 $0.67`
@@ -57,6 +53,19 @@ The compact percentage tells you when auto-compact fires, but says nothing about
 The usage percentage is drawn as a fixed-width bar rather than a number. A number invites arithmetic ("42% of what?"); a bar shows headroom at a glance. The bar scales to `usable_cap = min(compact_threshold, 400000)` so a full bar always means "at the wall that binds first" — the 400K retrieval red line on a large window, or the auto-compact threshold on a small one. Color is decoupled from length (absolute token thresholds), so the two degradation signals — retrieval quality and proximity to the ceiling — read independently.
 
 Overflow is marked with a `▶` arrowhead **fused** to the bar (no space), so the bar reads as continuing off-scale; the box keeps its `STATUSLINE_CTX_BAR_WIDTH` blocks and the arrowhead adds one cell. It is gated on the **red retrieval zone** (>= 400K), not merely on passing the bar ceiling: on a large window the ceiling *is* 400K so overflow is inherently red; on a small window the ceiling is the auto-compact threshold (below 400K), and passing it is a routine, self-healing state that doesn't warrant an alarm glyph — the full bar alone signals it. Reserving the marker for the red line keeps it meaning one thing: irreversible retrieval degradation. Bar cells are set by `STATUSLINE_CTX_BAR_WIDTH` (default 8); the 7d pace meter has its own `STATUSLINE_PACE_BAR_WIDTH` (default 8) so the two bars can be tuned independently or matched.
+
+### Per-model buckets show a number AND a bar
+The 5-hour and 7-day fields show a number alone, and the context field shows a number plus a bar. The per-model bucket follows the context field, for the reason given above: the bar shows headroom at a glance while the number keeps the precision a bar cannot carry at 8 cells. At 4% the bar is empty and the number is the whole signal, which is exactly when you want the number.
+
+No reset time is shown. The per-model window shares the 7-day window's reset, which the neighbouring field already displays, so a second copy would be the same fact twice.
+
+The color ladder matches `fmt_limit` rather than the context field, because the field is a plan limit and reads alongside the other two.
+
+### A stale per-model number is hidden, not shown
+The bucket is fetched out of band, so unlike every other field it can go stale without anything failing visibly. Past `STATUSLINE_MODEL_USAGE_MAX_AGE` (default 1 hour) the field disappears rather than showing the last known value. For a number you throttle against, absent is a signal you can act on and wrong is not: a refresher broken since this morning would otherwise leave a confident 4% on screen while the real bucket sat at 60%.
+
+### Per-model buckets are gated on the plan rate limits
+The field renders inside section 3 and inherits its gate. A session with no plan rate limits (API key, Bedrock, Vertex) has no plan buckets either, so hiding both together is correct rather than incidental.
 
 ### Message count removed
 An earlier version showed a colored user-message count as a second degradation axis (multi-turn reliability decay). It was dropped: the number wasn't actionable in practice — token volume already carries the "how loaded is this session" signal, and message count added a competing indicator without changing what the user does about it. The per-round cost reset still keys off the same `UserPromptSubmit` marker; only the display and its state field were removed.
@@ -213,6 +222,8 @@ Approximated as `ctx_max - 33000`. Override with `STATUSLINE_COMPACT_OVERHEAD` e
 | `STATUSLINE_PACE_WORK` | unset | Your weekly work schedule (`"<days> <start>-<end>"` local 24h, e.g. `"Mon-Fri 09-18"`; days a range like `Mon-Fri` or a comma list like `Mon,Wed,Fri`; hours `HH` or `HH:MM`). The 7d pace meter judges pace against your work schedule instead of the reset (see below). Unset = judge to the reset. |
 | `STATUSLINE_PACE_HORIZON_TS` | unset | Absolute-epoch override of the computed horizon (advanced / tests). Takes precedence over `STATUSLINE_PACE_WORK`. |
 | `STATUSLINE_JSON_PATH` | `~/.claude.json` | Credential file the auth/plan letter reads (tests point it at fixtures). |
+| `STATUSLINE_MODEL_BAR_WIDTH` | 8 | Cells in each per-model weekly usage bar. |
+| `STATUSLINE_MODEL_USAGE_MAX_AGE` | 3600 | Seconds of cached-data age past which the per-model field is hidden rather than shown stale. |
 | `STATUSLINE_MODEL_USAGE_CACHE` | `~/.claude-statusline/model-usage.json` | Per-model weekly usage cache the refresher writes and the statusline reads. |
 | `STATUSLINE_MODEL_USAGE_FIXTURE` | unset | Refresher reads this saved response body instead of calling the API (tests, debugging). |
 | `STATUSLINE_MODEL_USAGE_URL` | the oauth usage endpoint | Refresher endpoint override. |
