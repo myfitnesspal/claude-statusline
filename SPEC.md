@@ -257,11 +257,11 @@ a wrong field reads as a reading.
 
 **A timestamp in the future hides the field.** `fetchedAtMs` is compared against
 the render's own clock, and a negative age returns early. Without that check,
-clock skew makes both threshold comparisons false, which buys exactly the
-reads-as-current outcome the two constants exist to prevent. The guard is
+clock skew makes the cutoff comparison false, which buys exactly the
+reads-as-current outcome that cutoff exists to prevent. The guard is
 therefore load-bearing for the staleness policy rather than defensive tidying.
 
-### Staleness follows Claude Code's own two constants
+### Staleness follows Claude Code's own read cutoff
 
 The cache can be an hour behind, so this field needs a staleness policy that the
 other fields do not. The policy is one threshold, and it comes out of Claude Code's

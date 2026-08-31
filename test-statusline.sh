@@ -791,28 +791,26 @@ mu_json_write 60 "$FABLE_ONLY" "other-account"
 out=$(run_limits)
 assert_not_contains "a cache block from another account is ignored" "$out" "F 50%"
 
-# Staleness follows Claude Code's own two constants for this cache, not a threshold
-# of our choosing. It persists a fresh fetch at most every 5 minutes (Ten=300000),
-# and its own reader refuses the block past 1 hour (wen=3600000), so a block older
-# than an hour is one Claude Code itself would reject.
-
-# The field is the number alone at every age it renders at. An age stamp was tried
-# and dropped: it spent a cell on a number that is almost always within a few
-# minutes of current, and the cutoff below is what keeps a genuinely stale reading
-# off the line.
+# Staleness follows Claude Code's own read cutoff for this cache, not a threshold of
+# our choosing: its reader refuses the block past 1 hour (wen=3600000), so a block
+# older than an hour is one Claude Code itself would reject.
+#
+# Inside that cutoff the field is the number alone at every age. An age stamp was
+# tried and dropped: it spent a cell on a number that is almost always within a few
+# minutes of current.
 reset_state
 mu_json_write 120 "$FABLE_ONLY"
 out=$(run_limits)
-assert_contains "a fetch inside the write throttle renders bare" "$out" "F 50%"
-assert_not_contains "no age is shown while fresh" "$out" "F 50% 2m"
+assert_contains "a 2-minute-old fetch renders bare" "$out" "F 50%"
+assert_not_contains "2 minutes old shows no age" "$out" "F 50% 2m"
 
 reset_state
 mu_json_write 240 "$FABLE_ONLY"
 out=$(run_limits)
 assert_not_contains "4 minutes old is still bare" "$out" "F 50% 4m"
 
-# Past the write throttle the field stays bare. This is the boundary the age stamp
-# used to cross, so these three are what discriminate the removal.
+# These three sit where the age stamp used to appear, so they are what discriminate
+# its removal.
 reset_state
 mu_json_write 360 "$FABLE_ONLY"
 out=$(run_limits)
