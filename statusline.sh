@@ -74,8 +74,10 @@ STATUSLINE_PACE_GAMMA="${STATUSLINE_PACE_GAMMA:-1.5}"
 
 # Per-model weekly usage buckets (the rows /usage shows as "Current week (Fable)").
 # The statusline payload carries no per-model window, but Claude Code caches the
-# whole usage response in ~/.claude.json as cachedUsageUtilization and refreshes it
-# with its own polling, so the buckets are already on disk. See SPEC.md.
+# whole usage response in ~/.claude.json as cachedUsageUtilization, so the buckets
+# are already on disk. It refreshes that block only when a usage fetch succeeds,
+# which happens on /usage and on an SDK get_usage request. There is no background
+# poll. See SPEC.md.
 #
 # Both age thresholds are Claude Code's own, read out of its binary rather than
 # chosen here, because it is the writer and its reader defines what the block means:
