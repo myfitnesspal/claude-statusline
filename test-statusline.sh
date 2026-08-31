@@ -1136,7 +1136,9 @@ elif [ "$demo_generated" = "$demo_readme" ]; then
 else
 	FAIL=$((FAIL + 1))
 	echo "FAIL: README.md's demo block is stale — run: bash demo.sh --update"
-	diff <(printf '%s\n' "$demo_readme") <(printf '%s\n' "$demo_generated") | head -12
+	# `diff` exits 1 on a difference, and `set -euo pipefail` would abort the run
+	# here, before the Results block prints. The verdict line has to survive a failure.
+	diff <(printf '%s\n' "$demo_readme") <(printf '%s\n' "$demo_generated") | head -12 || true
 fi
 
 # This pins that the generator produced output, and nothing more. It does NOT
