@@ -235,10 +235,18 @@ both staleness thresholds at once, using data from the very file they guard.
 The fix is `gsub("[^A-Za-z0-9]"; "") | ascii_upcase` followed by `[0:1]`, applied
 inside `jq` before the value is emitted. One uppercase alphanumeric character is
 all the renderer uses, and no newline, tab, colon, or escape byte survives it.
-That removes the class rather than patching the instance, which is why the fix
-lives at the read rather than at each field that could be forged. A future edit
-that loosens the character class, or that moves the sanitization downstream of
-the emit, reopens the channel.
+That closes the channel for this field rather than patching one payload, so a
+future edit that loosens the character class, or that moves the sanitization
+downstream of the emit, reopens it.
+
+The channel itself is not closed. `organizationType` rides the same stream and
+is emitted raw, so a newline in it injects whatever tag the attacker chooses.
+Measured 2026-08-31: an `organizationType` of `claude_max\nbucket:Z\t99`
+renders `Z 99%` against an empty `limits[]`, and an SGR attribute smuggled the
+same way survives the suite's escape-byte check, which strips well-formed
+sequences before testing for a stray `ESC`. Closing the channel means either
+sanitizing every server-supplied value on it or choosing a delimiter the values
+cannot contain.
 
 **A non-numeric percentage drops the bucket instead of defaulting to zero.**
 `jq` emits the sentinel `x` when `.percent` is not a number, and the loop's
