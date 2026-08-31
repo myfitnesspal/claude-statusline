@@ -230,7 +230,7 @@ lines, which the shell loop below it parses by tag. A newline inside
 server controls a channel it was never meant to reach. Two demonstrated
 consequences: a name of `Fable\norg:claude_enterprise` rewrote the auth letter,
 and a name carrying `\nfetched:<recent>` forged the cache timestamp and defeated
-both staleness thresholds at once, using data from the very file they guard.
+the staleness cutoff, using data from the very file it guards.
 
 The fix is `gsub("[^A-Za-z0-9]"; "") | ascii_upcase` followed by `[0:1]`, applied
 inside `jq` before the value is emitted. One uppercase alphanumeric character is

@@ -265,8 +265,8 @@ fmt_limit() {
 # facts ride this one newline-delimited stream, so a newline inside a name would
 # start a line the loop below reads as another tag: a name of
 # "Fable\norg:claude_enterprise" rewrote the auth letter, and one carrying
-# "\nfetched:<recent>" forged the cache timestamp and defeated both staleness
-# guards at once. jq therefore reduces the name to a single uppercase alphanumeric
+# "\nfetched:<recent>" forged the cache timestamp and defeated the staleness
+# cutoff. jq therefore reduces the name to a single uppercase alphanumeric
 # initial before it ever reaches the channel. That is all the renderer uses, and
 # no newline, tab, colon or escape byte can survive it, which removes the class
 # rather than patching the instance.

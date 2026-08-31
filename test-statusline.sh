@@ -1061,8 +1061,8 @@ out=$(run_x)
 assert_contains "a newline in the model name cannot rewrite the auth letter" "$out" "1M M "
 assert_not_contains "the injected org value is not adopted" "$out" "1M E "
 
-# Forging the fetch timestamp defeats BOTH staleness halves at once: the field
-# would render, and render with no age label, from a two-hour-old block.
+# Forging the fetch timestamp defeats the staleness cutoff. A two-hour-old block
+# would render as though it were inside the hour.
 reset_state
 stamp_fresh=$(( $(date +%s) - 30 ))
 mu_x_write 7200 "[{\"kind\":\"weekly_scoped\",\"percent\":99,\"scope\":{\"model\":{\"display_name\":\"Zed\\nfetched:${stamp_fresh}\\nX\"}}},{\"kind\":\"weekly_scoped\",\"percent\":21,\"scope\":{\"model\":{\"display_name\":\"Fable\"}}}]"
