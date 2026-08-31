@@ -7,6 +7,7 @@ Custom statusline for Claude Code, displayed via the `StatuslineUpdate` hook.
 - `round-reset.sh` — called by `UserPromptSubmit` hook, marks round boundaries
 - `install.sh` — installs hooks into Claude Code settings
 - `test-statusline.sh` — tests feeding mock JSON and checking output
+- `demo.sh` — renders the README's demo block from the real script; `--update` rewrites it in place, and the suite fails if the block drifts
 - `SPEC.md` — full specification with layout, design decisions, color thresholds, and available JSON fields
 
 ## Important context
