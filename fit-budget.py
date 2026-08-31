@@ -35,6 +35,13 @@ def load():
             d["session_id"] = str(d.get("session_id", "?"))
         except (ValueError, KeyError, TypeError):
             continue
+        # Skip the test suite's own snapshots. The suite used to render against the
+        # real $HOME and wrote hundreds of synthetic rows here; because fit_window
+        # prefers the widest span, a 10-row synthetic group outranked the only real
+        # window and the 7d cap came out as $0. The suite is isolated now, so this
+        # is a guard against that isolation regressing rather than a live need.
+        if d["session_id"].startswith("test-"):
+            continue
         # 5h/7d pct may be null right after a plan/limit gap
         for k in ("five_hour_pct", "seven_day_pct"):
             try:
