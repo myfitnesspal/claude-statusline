@@ -23,6 +23,8 @@ unset STATUSLINE_MODEL_BAR_WIDTH
 unset STATUSLINE_MODEL_USAGE_MAX_AGE
 unset STATUSLINE_MODEL_USAGE_CACHE
 unset STATUSLINE_MODEL_USAGE_REFRESH
+unset STATUSLINE_MODEL_USAGE_TTL
+unset STATUSLINE_MODEL_USAGE_REFRESHER
 unset ANTHROPIC_API_KEY
 PASS=0
 FAIL=0
@@ -876,6 +878,102 @@ out=$(mock_json 100 500 10000 200 200000 \
 assert_not_contains "no plan limits hides the model bucket too" "$out" "F 50%"
 
 rm -rf "$MU_R_DIR"
+
+echo ""
+echo "=== Per-model usage auto-refresh spawn ==="
+
+# Nothing else drives the refresher, so the statusline spawns it detached when the
+# cache goes stale. The spawn must never delay or alter a render.
+
+MU_S_DIR="/tmp/claude-statusline-muspawn-$$"
+mkdir -p "$MU_S_DIR"
+MU_S_CACHE="$MU_S_DIR/model-usage.json"
+MU_S_SENTINEL="$MU_S_DIR/spawned"
+
+# A stub standing in for model-usage-refresh.sh: it records that it ran.
+cat > "$MU_S_DIR/stub.sh" <<'EOF'
+#!/usr/bin/env bash
+date +%s >> "$MU_SPAWN_SENTINEL"
+EOF
+chmod +x "$MU_S_DIR/stub.sh"
+
+# Write a cache whose checked_at is $1 seconds old.
+mu_spawn_cache() {
+	local age=$1 stamp
+	stamp=$(( $(date +%s) - age ))
+	printf '{"ts":%s,"checked_at":%s,"models":[{"name":"Fable","pct":4,"resets_at":1788739200}]}\n' \
+		"$stamp" "$stamp" > "$MU_S_CACHE"
+}
+
+# The spawn is detached, so poll briefly rather than assuming it has landed.
+mu_spawned() {
+	local i=0
+	while [ "$i" -lt 40 ]; do
+		[ -s "$MU_S_SENTINEL" ] && return 0
+		sleep 0.05
+		i=$((i + 1))
+	done
+	return 1
+}
+
+run_spawn() {
+	limits_json | env MU_SPAWN_SENTINEL="$MU_S_SENTINEL" \
+		STATUSLINE_MODEL_USAGE_CACHE="$MU_S_CACHE" \
+		STATUSLINE_MODEL_USAGE_REFRESHER="$MU_S_DIR/stub.sh" \
+		"$@" bash "$STATUSLINE" | strip_ansi
+}
+
+# No cache at all: the first render is what bootstraps the fetch.
+reset_state
+rm -f "$MU_S_CACHE" "$MU_S_SENTINEL"
+out=$(run_spawn)
+if mu_spawned; then PASS=$((PASS + 1)); else
+	FAIL=$((FAIL + 1)); echo "FAIL: missing cache spawns the refresher"; fi
+
+# Stale attempt: past the TTL, try again.
+reset_state
+rm -f "$MU_S_SENTINEL"
+mu_spawn_cache 600
+out=$(run_spawn STATUSLINE_MODEL_USAGE_TTL=300)
+if mu_spawned; then PASS=$((PASS + 1)); else
+	FAIL=$((FAIL + 1)); echo "FAIL: attempt older than the TTL spawns the refresher"; fi
+assert_contains "a spawning render still shows the cached bucket" "$out" "F 4%"
+
+# Fresh attempt: no spawn. Renders happen many times a second, so a fresh cache
+# must not fire a fetch per render.
+reset_state
+rm -f "$MU_S_SENTINEL"
+mu_spawn_cache 60
+out=$(run_spawn STATUSLINE_MODEL_USAGE_TTL=300)
+if mu_spawned; then
+	FAIL=$((FAIL + 1)); echo "FAIL: a fresh attempt must not spawn the refresher"
+else PASS=$((PASS + 1)); fi
+
+# The network call is opt-out: setting the switch to false stops the spawn while
+# still rendering whatever the cache already holds.
+reset_state
+rm -f "$MU_S_SENTINEL"
+mu_spawn_cache 600
+out=$(run_spawn STATUSLINE_MODEL_USAGE_TTL=300 STATUSLINE_MODEL_USAGE_REFRESH=false)
+if mu_spawned; then
+	FAIL=$((FAIL + 1)); echo "FAIL: STATUSLINE_MODEL_USAGE_REFRESH=false must stop the spawn"
+else PASS=$((PASS + 1)); fi
+assert_contains "refresh disabled still renders the cache" "$out" "F 4%"
+
+# Stale DATA with a fresh ATTEMPT: the field hides (data too old) and no spawn
+# fires (we just tried). The two timestamps are read independently.
+reset_state
+rm -f "$MU_S_SENTINEL"
+stamp_now=$(date +%s)
+printf '{"ts":%s,"checked_at":%s,"models":[{"name":"Fable","pct":4,"resets_at":1788739200}]}\n' \
+	"$((stamp_now - 7200))" "$stamp_now" > "$MU_S_CACHE"
+out=$(run_spawn STATUSLINE_MODEL_USAGE_TTL=300 STATUSLINE_MODEL_USAGE_MAX_AGE=3600)
+assert_not_contains "stale data hides even with a fresh attempt" "$out" "F 4%"
+if mu_spawned; then
+	FAIL=$((FAIL + 1)); echo "FAIL: a fresh attempt must not spawn even when the data is stale"
+else PASS=$((PASS + 1)); fi
+
+rm -rf "$MU_S_DIR"
 
 echo ""
 echo "=== Results ==="

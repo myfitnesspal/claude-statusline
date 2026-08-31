@@ -78,6 +78,21 @@ STATUSLINE_PACE_GAMMA="${STATUSLINE_PACE_GAMMA:-1.5}"
 STATUSLINE_MODEL_BAR_WIDTH="${STATUSLINE_MODEL_BAR_WIDTH:-8}"
 STATUSLINE_MODEL_USAGE_MAX_AGE="${STATUSLINE_MODEL_USAGE_MAX_AGE:-3600}"
 MODEL_USAGE_CACHE="${STATUSLINE_MODEL_USAGE_CACHE:-$HOME/.claude-statusline/model-usage.json}"
+STATUSLINE_MODEL_USAGE_TTL="${STATUSLINE_MODEL_USAGE_TTL:-300}"
+
+# The refresher is a sibling file in the repo, but install.sh symlinks this script
+# into ~/.claude, so BASH_SOURCE names the link and the link's directory holds no
+# refresher. macOS readlink has no -f, so walk the chain by hand.
+_self="${BASH_SOURCE[0]}"
+while [ -L "$_self" ]; do
+	_link=$(readlink "$_self")
+	case "$_link" in
+		/*) _self=$_link ;;
+		*)  _self="$(dirname "$_self")/$_link" ;;
+	esac
+done
+SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd)"
+MODEL_USAGE_REFRESHER="${STATUSLINE_MODEL_USAGE_REFRESHER:-$SCRIPT_DIR/model-usage-refresh.sh}"
 
 # Build a bar string: `filled` solid cells (█) out of `width`, the rest empty (░).
 bar_of() {
@@ -436,6 +451,31 @@ fmt_pace() {
 	fi
 }
 
+# Nothing else drives the refresher, so a render is what starts it: spawn when the
+# last attempt has aged past the TTL, including the first render, when there is no
+# cache at all. Detached with output discarded, because a render must never block on
+# the network; the refresher's own lock keeps concurrent sessions to one fetch.
+#
+# This keys on checked_at (when we last tried), not ts (how old the numbers are).
+# A refresher that keeps failing therefore retries on the TTL rather than on every
+# render, while the field still hides itself once the data ages out.
+#
+# STATUSLINE_MODEL_USAGE_REFRESH=false opts out of the network call entirely; the
+# cached buckets still render.
+maybe_refresh_model_usage() {
+	case "${STATUSLINE_MODEL_USAGE_REFRESH:-true}" in
+		false|0|no) return ;;
+	esac
+	[ -x "$MODEL_USAGE_REFRESHER" ] || return
+	local checked=0
+	if [ -f "$MODEL_USAGE_CACHE" ]; then
+		checked=$(jq -r '.checked_at // 0' "$MODEL_USAGE_CACHE" 2>/dev/null) || checked=0
+		case "$checked" in ''|*[!0-9]*) checked=0 ;; esac
+	fi
+	[ $((now - checked)) -lt "$STATUSLINE_MODEL_USAGE_TTL" ] && return
+	( "$MODEL_USAGE_REFRESHER" >/dev/null 2>&1 & ) >/dev/null 2>&1
+}
+
 # Per-model weekly usage, appended to the rate-limits section: one field per
 # model-scoped bucket, carrying the model's initial, its weekly percentage, and a
 # bar scaled 0-100% of that bucket. The bucket shares the 7d window's reset, so no
@@ -489,6 +529,7 @@ round_cost=$(awk "BEGIN {printf \"%.2f\", $cost - $round_start_cost}")
 cost_fmt=$(printf '%s +$%s $%.2f' "$(fmt_duration "$api_secs")" "$round_cost" "$cost")
 limit_parts=""
 if [ -n "$limit_5h" ]; then
+	maybe_refresh_model_usage
 	limit_parts="$(fmt_limit "$limit_5h" "$limit_5h_reset")"
 	[ -n "$limit_7d" ] && limit_parts="${limit_parts} · $(fmt_limit "$limit_7d" "$limit_7d_reset")$(fmt_pace "$limit_7d" "$limit_7d_reset")"
 	limit_parts="${limit_parts}$(fmt_model_usage)"
