@@ -73,26 +73,11 @@ STATUSLINE_PACE_TOL="${STATUSLINE_PACE_TOL:-10}"
 STATUSLINE_PACE_GAMMA="${STATUSLINE_PACE_GAMMA:-1.5}"
 
 # Per-model weekly usage buckets (the rows /usage shows as "Current week (Fable)").
-# The statusline payload carries no per-model window, so these come from the cache
-# model-usage-refresh.sh writes out of band. See SPEC.md.
+# The statusline payload carries no per-model window, but Claude Code caches the
+# whole usage response in ~/.claude.json as cachedUsageUtilization and refreshes it
+# with its own polling, so the buckets are already on disk. See SPEC.md.
 STATUSLINE_MODEL_BAR_WIDTH="${STATUSLINE_MODEL_BAR_WIDTH:-8}"
 STATUSLINE_MODEL_USAGE_MAX_AGE="${STATUSLINE_MODEL_USAGE_MAX_AGE:-21600}"
-MODEL_USAGE_CACHE="${STATUSLINE_MODEL_USAGE_CACHE:-$HOME/.claude-statusline/model-usage.json}"
-STATUSLINE_MODEL_USAGE_TTL="${STATUSLINE_MODEL_USAGE_TTL:-900}"
-
-# The refresher is a sibling file in the repo, but install.sh symlinks this script
-# into ~/.claude, so BASH_SOURCE names the link and the link's directory holds no
-# refresher. macOS readlink has no -f, so walk the chain by hand.
-_self="${BASH_SOURCE[0]}"
-while [ -L "$_self" ]; do
-	_link=$(readlink "$_self")
-	case "$_link" in
-		/*) _self=$_link ;;
-		*)  _self="$(dirname "$_self")/$_link" ;;
-	esac
-done
-SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd)"
-MODEL_USAGE_REFRESHER="${STATUSLINE_MODEL_USAGE_REFRESHER:-$SCRIPT_DIR/model-usage-refresh.sh}"
 
 # Build a bar string: `filled` solid cells (█) out of `width`, the rest empty (░).
 bar_of() {
@@ -250,29 +235,58 @@ fmt_limit() {
 	printf '%b%s %s%%%b' "$color" "$label" "$pct" "$NORMAL"
 }
 
+# ~/.claude.json is read ONCE per render, because two fields live in it and the
+# file is ~200KB of JSON: the OAuth account's organization type (the auth letter)
+# and Claude Code's cached usage response (the per-model weekly buckets). One jq
+# pass emits both, tagged by line, rather than parsing the file twice.
+#
+# STATUSLINE_JSON_PATH overrides the location (tests point it at fixtures).
+#
+# The cached usage block records which account it describes. After an account
+# switch it describes someone else's usage, so a uuid mismatch drops it rather
+# than rendering another account's numbers.
+claude_json="${STATUSLINE_JSON_PATH:-$HOME/.claude.json}"
+cj_org="" cj_fetched=0 cj_buckets=""
+if [ -f "$claude_json" ]; then
+	while IFS= read -r _line; do
+		case "$_line" in
+			org:*)     cj_org=${_line#org:} ;;
+			fetched:*) cj_fetched=${_line#fetched:} ;;
+			bucket:*)  cj_buckets="${cj_buckets}${_line#bucket:}"$'\n' ;;
+		esac
+	done < <(jq -r '
+		(.cachedUsageUtilization // {}) as $u |
+		(($u.accountUuid // "") == (.oauthAccount.accountUuid // "\u0000")) as $mine |
+		(if .oauthAccount then "org:" + (.oauthAccount.organizationType // "unknown") else "org:" end),
+		("fetched:" + (if $mine then (($u.fetchedAtMs // 0) / 1000 | floor) else 0 end | tostring)),
+		(if $mine then
+			$u.utilization.limits[]?
+			| select(.kind == "weekly_scoped")
+			| select(.scope.model.display_name != null)
+			| "bucket:" + .scope.model.display_name + "\t"
+				+ ((.percent // 0) | if type == "number" then floor else 0 end | tostring)
+		 else empty end)
+	' "$claude_json" 2>/dev/null)
+fi
+
 # Auth/plan mode letter, shown after the model. K = ANTHROPIC_API_KEY in env
 # (pay-per-token API billing). Otherwise the letter reflects the OAuth account's
 # organizationType: M = Max, P = Pro, T = Team, E = Enterprise. A = any other
 # non-empty org type (unknown/fallback). Hidden when logged out with no key.
 # The env var wins because Claude Code prefers an approved ANTHROPIC_API_KEY
 # over the stored OAuth login.
-# STATUSLINE_JSON_PATH overrides the credential file location (tests).
 auth_letter=""
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
 	auth_letter="K"
 else
-	claude_json="${STATUSLINE_JSON_PATH:-$HOME/.claude.json}"
-	if [ -f "$claude_json" ]; then
-		org_type=$(jq -r 'if .oauthAccount then (.oauthAccount.organizationType // "unknown") else "" end' "$claude_json" 2>/dev/null)
-		case "$org_type" in
-			claude_max) auth_letter="M" ;;
-			claude_pro) auth_letter="P" ;;
-			claude_team) auth_letter="T" ;;
-			claude_enterprise) auth_letter="E" ;;
-			"") auth_letter="" ;;
-			*) auth_letter="A" ;;
-		esac
-	fi
+	case "$cj_org" in
+		claude_max) auth_letter="M" ;;
+		claude_pro) auth_letter="P" ;;
+		claude_team) auth_letter="T" ;;
+		claude_enterprise) auth_letter="E" ;;
+		"") auth_letter="" ;;
+		*) auth_letter="A" ;;
+	esac
 fi
 
 # Day name (mon/tue/.../sun, case/prefix-insensitive) -> 1..7 (Mon=1), 0 if invalid.
@@ -451,51 +465,21 @@ fmt_pace() {
 	fi
 }
 
-# Nothing else drives the refresher, so a render is what starts it: spawn when the
-# last attempt has aged past the TTL, including the first render, when there is no
-# cache at all. A retry_after deadline the server set outranks the TTL. Detached with output discarded, because a render must never block on
-# the network; the refresher's own lock keeps concurrent sessions to one fetch.
-#
-# This keys on checked_at (when we last tried), not ts (how old the numbers are).
-# A refresher that keeps failing therefore retries on the TTL rather than on every
-# render, while the field still hides itself once the data ages out.
-#
-# STATUSLINE_MODEL_USAGE_REFRESH=false opts out of the network call entirely; the
-# cached buckets still render.
-maybe_refresh_model_usage() {
-	case "${STATUSLINE_MODEL_USAGE_REFRESH:-true}" in
-		false|0|no) return ;;
-	esac
-	[ -x "$MODEL_USAGE_REFRESHER" ] || return
-	local checked=0 retry_after=0
-	if [ -f "$MODEL_USAGE_CACHE" ]; then
-		IFS=$'\t' read -r checked retry_after < <(jq -r '"\(.checked_at // 0)\t\(.retry_after // 0)"' \
-			"$MODEL_USAGE_CACHE" 2>/dev/null) || { checked=0; retry_after=0; }
-		case "$checked" in ''|*[!0-9]*) checked=0 ;; esac
-		case "$retry_after" in ''|*[!0-9]*) retry_after=0 ;; esac
-	fi
-	# The server's own deadline outranks the TTL: calling before it just earns another
-	# 429, and the endpoint's window is hours long.
-	[ "$now" -lt "$retry_after" ] && return
-	[ $((now - checked)) -lt "$STATUSLINE_MODEL_USAGE_TTL" ] && return
-	( "$MODEL_USAGE_REFRESHER" >/dev/null 2>&1 & ) >/dev/null 2>&1
-}
-
 # Per-model weekly usage, appended to the rate-limits section: one field per
 # model-scoped bucket, carrying the model's initial, its weekly percentage, and a
 # bar scaled 0-100% of that bucket. The bucket shares the 7d window's reset, so no
 # reset time is repeated.
 #
-# Data older than STATUSLINE_MODEL_USAGE_MAX_AGE is hidden rather than shown. A
-# refresher that has been failing for hours would otherwise leave a confident stale
-# number on screen, and absent beats wrong for a number you throttle against.
+# Claude Code's polling cadence is its own business, so the cached fetch can be
+# arbitrarily old. Past STATUSLINE_MODEL_USAGE_MAX_AGE the field is hidden rather
+# than shown: for a number you throttle against, absent is actionable and wrong is
+# not.
 fmt_model_usage() {
-	[ -f "$MODEL_USAGE_CACHE" ] || return
-	local ts age name pct color filled initial
-	ts=$(jq -r '.ts // 0' "$MODEL_USAGE_CACHE" 2>/dev/null) || return
-	case "$ts" in ''|*[!0-9]*) return ;; esac
-	age=$((now - ts))
-	[ "$age" -gt "$STATUSLINE_MODEL_USAGE_MAX_AGE" ] && return
+	[ -n "$cj_buckets" ] || return
+	case "$cj_fetched" in ''|*[!0-9]*) return ;; esac
+	[ "$cj_fetched" -le 0 ] && return
+	[ $((now - cj_fetched)) -gt "$STATUSLINE_MODEL_USAGE_MAX_AGE" ] && return
+	local name pct color filled initial
 	while IFS=$'\t' read -r name pct; do
 		[ -z "$name" ] && continue
 		case "$pct" in ''|*[!0-9]*) continue ;; esac
@@ -507,8 +491,7 @@ fmt_model_usage() {
 		initial=$(printf '%s' "${name:0:1}" | tr 'a-z' 'A-Z')
 		printf ' · %b%s %s%% %s%b' "$color" "$initial" "$pct" \
 			"$(bar_of "$filled" "$STATUSLINE_MODEL_BAR_WIDTH")" "$NORMAL"
-	done < <(jq -r '.models[]? | "\(.name)\t\((.pct // 0) | if type == "number" then floor else 0 end)"' \
-		"$MODEL_USAGE_CACHE" 2>/dev/null)
+	done <<< "$cj_buckets"
 }
 
 # Shorten model name, append context size (e.g. "Opus 4.6 (1M context)" -> "O4.6·1M")
@@ -534,7 +517,6 @@ round_cost=$(awk "BEGIN {printf \"%.2f\", $cost - $round_start_cost}")
 cost_fmt=$(printf '%s +$%s $%.2f' "$(fmt_duration "$api_secs")" "$round_cost" "$cost")
 limit_parts=""
 if [ -n "$limit_5h" ]; then
-	maybe_refresh_model_usage
 	limit_parts="$(fmt_limit "$limit_5h" "$limit_5h_reset")"
 	[ -n "$limit_7d" ] && limit_parts="${limit_parts} · $(fmt_limit "$limit_7d" "$limit_7d_reset")$(fmt_pace "$limit_7d" "$limit_7d_reset")"
 	limit_parts="${limit_parts}$(fmt_model_usage)"

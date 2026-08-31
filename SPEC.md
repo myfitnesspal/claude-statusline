@@ -35,7 +35,7 @@ O4.6 200k | 34k █████░░░ | 2h14m 11% · 3d5h 12% · F 4% ░░�
 - Color-coded: gray < 50%, yellow 50-79%, red >= 80%
 - Only shown when rate limit data is available (Pro/Max subscribers)
 - The 7-day limit is followed by a **bidirectional pace meter** (see below): it flags both burning too fast (you'll wall before the window/horizon) and too slow (you'll leave weekly budget unused, which is lost at reset). Hidden when on pace by default, so it only appears when it has something to say.
-- **Per-model weekly buckets** come last, one field each: the model's initial, its weekly percentage, and a bar scaled 0-100% of that bucket. `F 4% ░░░░░░░░` is the `Current week (Fable)` row from `/usage`. These are fetched out of band (see Per-Model Weekly Usage); the field is hidden when there is no bucket or the cached data is stale. Bar width is `STATUSLINE_MODEL_BAR_WIDTH` cells (default 8).
+- **Per-model weekly buckets** come last, one field each: the model's initial, its weekly percentage, and a bar scaled 0-100% of that bucket. `F 4% ░░░░░░░░` is the `Current week (Fable)` row from `/usage`. These are read from Claude Code's own cached usage response in `~/.claude.json` (see Per-Model Weekly Usage); the field is hidden when there is no bucket or the cached data is stale. Bar width is `STATUSLINE_MODEL_BAR_WIDTH` cells (default 8).
 
 ### Section 4: Cost and timing
 `19m +$0.05 $0.67`
@@ -60,9 +60,6 @@ The 5-hour and 7-day fields show a number alone, and the context field shows a n
 No reset time is shown. The per-model window shares the 7-day window's reset, which the neighbouring field already displays, so a second copy would be the same fact twice.
 
 The color ladder matches `fmt_limit` rather than the context field, because the field is a plan limit and reads alongside the other two.
-
-### A stale per-model number is hidden, not shown
-The bucket is fetched out of band, so unlike every other field it can go stale without anything failing visibly. Past `STATUSLINE_MODEL_USAGE_MAX_AGE` (default 1 hour) the field disappears rather than showing the last known value. For a number you throttle against, absent is a signal you can act on and wrong is not: a refresher broken since this morning would otherwise leave a confident 4% on screen while the real bucket sat at 60%.
 
 ### Per-model buckets are gated on the plan rate limits
 The field renders inside section 3 and inherits its gate. A session with no plan rate limits (API key, Bedrock, Vertex) has no plan buckets either, so hiding both together is correct rather than incidental.
@@ -153,101 +150,62 @@ The `StatuslineUpdate` payload's `rate_limits` object is built from three source
 window reaches the hook, so the buckets `/usage` renders as `Current week (Fable)`
 are not available from the payload at all.
 
-`model-usage-refresh.sh` fetches them from the endpoint `/usage` itself calls:
-
-```
-GET https://api.anthropic.com/api/oauth/usage
-Authorization: Bearer <OAuth access token>
-```
-
-Each per-model bucket is a `limits[]` entry whose `kind` is `weekly_scoped` and
-which carries a `scope.model.display_name`. Its `percent` runs 0-100 and is floored,
-so the statusline shows the same integer the `/usage` dialog does. The access token
-comes from `~/.claude/.credentials.json` (`.claudeAiOauth.accessToken`), falling
-back to the macOS keychain entry `Claude Code-credentials`.
-
-### The endpoint is rate limited per account, and Claude Code shares the budget
-
-The window is hours long, and Claude Code's own `/usage` polling spends the same
-allowance. Measured 2026-08-31: the very first call this repo ever made came back
-`HTTP 429` with `retry-after: 3387`, meaning the budget was already spent by the
-running session. A 429 is therefore a normal outcome rather than a malfunction, and
-retrying through it is pointless.
-
-So the refresher records the deadline instead of retrying. It converts the
-`retry-after` seconds to an absolute epoch, stores it as `retry_after`, and the
-statusline refuses to spawn again before that moment. A later success writes
-`retry_after: 0`, so one throttled hour does not park the refresher permanently.
-
-This is what sets the cadence. `STATUSLINE_MODEL_USAGE_TTL` defaults to 900 seconds
-rather than anything shorter, because sub-window polling cannot succeed, and
-`STATUSLINE_MODEL_USAGE_MAX_AGE` defaults to 6 hours rather than 1, because a
-1-hour cutoff would hide the field through every throttled window. Six hours is
-tolerable for a weekly bucket: the number moves a few points per day, so a
-six-hour-old reading is off by well under a point, while its job stays intact,
-which is catching a refresher that has been dead since yesterday.
-
-A non-200 never reaches the parse. An error body is often valid JSON, so parsing it
-would write an empty bucket list over a healthy cache, and the field would vanish
-with nothing looking broken.
-
-### The fetch never runs in the render path
-
-A statusline render must not block on the network. The refresher runs out of band
-and writes a cache; the statusline only ever reads that cache.
-
-Cache file (`STATUSLINE_MODEL_USAGE_CACHE`, default
-`~/.claude-statusline/model-usage.json`):
+They are already on disk. Claude Code caches the entire usage response body in
+`~/.claude.json` under `cachedUsageUtilization`, and refreshes it with its own
+background polling:
 
 ```json
-{ "ts": 1788000000, "checked_at": 1788000600, "retry_after": 0,
-  "models": [ { "name": "Fable", "pct": 4, "resets_at": 1788739200 } ] }
+{ "cachedUsageUtilization": {
+    "fetchedAtMs": 1788192025425,
+    "accountUuid": "…",
+    "utilization": { "limits": [
+      { "kind": "weekly_scoped", "group": "weekly", "percent": 4,
+        "resets_at": "2026-09-06T23:00:00.244199+00:00",
+        "scope": { "model": { "display_name": "Fable" } } } ] } } }
 ```
 
-The three timestamps answer three different questions.
+A per-model bucket is a `limits[]` entry whose `kind` is `weekly_scoped` and which
+carries a `scope.model.display_name`. Its `percent` runs 0-100 and is floored, so
+the statusline shows the same integer the `/usage` dialog does.
 
-- `ts` is how old the numbers are. The statusline hides a field whose `ts` has aged
-  past `STATUSLINE_MODEL_USAGE_MAX_AGE` rather than showing a wrong one.
-- `checked_at` is when a fetch was last attempted. The respawn backoff keys on it,
-  so a refresher that keeps failing retries once per TTL and not once per render.
-- `retry_after` is the absolute epoch the server told us to come back, or 0. The
-  spawn refuses outright before it, whatever the TTL says.
+### The file is read once per render
 
-A failed fetch advances `checked_at`, keeps `ts` and `models` untouched, and exits
-non-zero. One bad call therefore degrades the display by age instead of blanking it.
-A response that is not a usage body (an expired token returns an error object) takes
-the same path, which is why the parse validates for a known window key before
-extracting: an unvalidated parse would quietly write an empty bucket list and the
-field would vanish while looking healthy.
+`~/.claude.json` holds two things this statusline needs, the OAuth account's
+organization type (the auth letter) and the cached usage response, and it is around
+200KB of JSON. One `jq` pass emits both, tagged by line, rather than parsing the
+file twice. `STATUSLINE_JSON_PATH` overrides the location, which is how the tests
+point it at fixtures.
 
-### What drives the refresher
+### A cached block from another account is ignored
 
-Nothing else does, so a render starts it. When the cached `checked_at` has aged
-past `STATUSLINE_MODEL_USAGE_TTL` (default 300 seconds), including the first render
-when there is no cache at all, the statusline spawns the refresher detached with its
-output discarded. The render itself never waits.
+The block records the `accountUuid` it describes. After an account switch it
+describes someone else's usage, so a mismatch against `oauthAccount.accountUuid`
+drops it rather than rendering the wrong numbers.
 
-The spawn keys on `checked_at`, not `ts`. A refresher that keeps failing therefore
-retries once per TTL rather than once per render, while the field still hides itself
-as soon as the data ages past `STATUSLINE_MODEL_USAGE_MAX_AGE`.
+### Stale data is hidden, not shown
 
-A `retry_after` deadline outranks the TTL entirely: calling before it earns another
-429 and nothing else.
+Claude Code's polling cadence is its own business, so `fetchedAtMs` can be
+arbitrarily old. Past `STATUSLINE_MODEL_USAGE_MAX_AGE` (default 6 hours) the field
+disappears rather than showing the last known value. For a number you throttle
+against, absent is a signal you can act on and wrong is not.
 
-`STATUSLINE_MODEL_USAGE_REFRESH=false` opts out of the network call entirely.
-Cached buckets still render, so the switch stops fetching without blanking the field.
+Six hours is tolerable for a weekly bucket, which moves a few points per day, so a
+six-hour-old reading is off by well under a point. The rule's real job stays intact,
+which is catching a cache that has not refreshed since yesterday.
 
-The spawn resolves its own path through symlinks, because `install.sh` links the
-statusline into `~/.claude` while the refresher stays a sibling in the repo. No
-install step is needed for the refresher: it is found relative to the resolved
-script, not the link.
+### Why the statusline does not fetch this itself
 
-Concurrent sessions each spawn their own refresher, so the cache write is a
-rename from a pid-suffixed tmp file, and a `mkdir` lock beside the cache admits one
-fetch at a time. A lock older than 120 seconds is treated as abandoned.
+An earlier version of this feature called `GET /api/oauth/usage` directly, the same
+endpoint Claude Code calls. That does not work as a polling source. The endpoint is
+rate limited per account on an hours-scale window, and Claude Code's own polling
+spends the same budget: measured 2026-08-31, the very first call ever made from this
+repo returned `HTTP 429` with `retry-after: 3387`, so the allowance was already gone.
+Fetching independently also risks throttling the user's own `/usage` dialog.
 
-Errors land in `model-usage.log` beside the cache, because a detached process has
-nowhere else to put stderr. The log is truncated past 64KB.
+Reading `cachedUsageUtilization` removes the whole problem. There is no OAuth token
+to handle, no network call in or near the render path, no 429 to back off from, and
+no competition for the account's allowance. Claude Code does the fetching, and this
+statusline reads what it stored.
 
 ## Auto-Compact Threshold Derivation
 
@@ -275,16 +233,7 @@ Approximated as `ctx_max - 33000`. Override with `STATUSLINE_COMPACT_OVERHEAD` e
 | `STATUSLINE_PACE_HORIZON_TS` | unset | Absolute-epoch override of the computed horizon (advanced / tests). Takes precedence over `STATUSLINE_PACE_WORK`. |
 | `STATUSLINE_JSON_PATH` | `~/.claude.json` | Credential file the auth/plan letter reads (tests point it at fixtures). |
 | `STATUSLINE_MODEL_BAR_WIDTH` | 8 | Cells in each per-model weekly usage bar. |
-| `STATUSLINE_MODEL_USAGE_TTL` | 900 | Seconds since the last fetch attempt before a render spawns the refresher again. A `retry_after` deadline from the server outranks it. |
-| `STATUSLINE_MODEL_USAGE_REFRESH` | true | Set `false` (or `0`, `no`) to stop spawning the refresher. Cached buckets still render. |
-| `STATUSLINE_MODEL_USAGE_REFRESHER` | the repo's `model-usage-refresh.sh` | Refresher path (tests point it at a stub). |
-| `STATUSLINE_MODEL_USAGE_MAX_AGE` | 21600 | Seconds of cached-data age past which the per-model field is hidden rather than shown stale. Six hours, not one, because the endpoint's throttling window would otherwise hide the field most of the time. |
-| `STATUSLINE_MODEL_USAGE_CACHE` | `~/.claude-statusline/model-usage.json` | Per-model weekly usage cache the refresher writes and the statusline reads. |
-| `STATUSLINE_MODEL_USAGE_FIXTURE` | unset | Refresher reads this saved response body instead of calling the API (tests, debugging). |
-| `STATUSLINE_MODEL_USAGE_URL` | the oauth usage endpoint | Refresher endpoint override. |
-| `STATUSLINE_MODEL_USAGE_TIMEOUT` | 10 | Refresher curl timeout, in seconds. |
-| `STATUSLINE_MODEL_USAGE_FIXTURE_STATUS` | 200 | HTTP status to simulate alongside a fixture (tests). |
-| `STATUSLINE_MODEL_USAGE_FIXTURE_RETRY_AFTER` | 0 | `retry-after` seconds to simulate alongside a fixture (tests). |
+| `STATUSLINE_MODEL_USAGE_MAX_AGE` | 21600 | Seconds of `cachedUsageUtilization.fetchedAtMs` age past which the per-model field is hidden rather than shown stale. |
 
 ### 7d pace meter (bidirectional gas-pedal)
 
