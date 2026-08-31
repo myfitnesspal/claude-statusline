@@ -20,6 +20,7 @@ unset STATUSLINE_PACE_HORIZON_TS
 unset STATUSLINE_PACE_SHOW_ON_PACE
 unset STATUSLINE_PACE_SHOW_COLD
 unset STATUSLINE_MODEL_USAGE_MAX_AGE
+unset SUBAGENT_MODE_STATE_DIR
 unset ANTHROPIC_API_KEY
 PASS=0
 FAIL=0
@@ -639,6 +640,55 @@ assert_not_contains "logged out hides M" "$out" "200k M "
 reset_state
 raw=$(STATUSLINE_JSON_PATH="$AUTH_JSON_DIR/enterprise.json" run_raw 100 500 10000 200 200000)
 assert_contains "auth letter uncolored" "$raw" "200k E "
+
+echo ""
+echo "=== Subagent mode segment ==="
+
+# The segment is guarded on the mode script's install path under $HOME. The suite's
+# throwaway HOME carries no such file by default, which is the not-installed case.
+reset_state
+out=$(run 100 500 10000 200 200000)
+assert_not_contains "segment absent when the mode script is not installed" "$out" "[sa:"
+
+# Install the guard file under the throwaway HOME. Session state is a per-session
+# file in SUBAGENT_MODE_STATE_DIR (tests point it at a scratch dir; production
+# leaves it unset, defaulting to /tmp).
+SA_HOOK_DIR="$TEST_HOME/src/claude-config/hooks"
+mkdir -p "$SA_HOOK_DIR"
+touch "$SA_HOOK_DIR/subagent-mode.sh"
+SA_STATE_DIR="/tmp/claude-statusline-satest-$$"
+mkdir -p "$SA_STATE_DIR"
+
+# Session state file says enabled: green [sa:on]
+reset_state
+printf 'enabled' > "$SA_STATE_DIR/claude-subagent-state-${SESSION}"
+out=$(SUBAGENT_MODE_STATE_DIR="$SA_STATE_DIR" run 100 500 10000 200 200000)
+assert_contains "state file enabled renders [sa:on]" "$out" "[sa:on]"
+raw=$(SUBAGENT_MODE_STATE_DIR="$SA_STATE_DIR" run_raw 100 500 10000 200 200000)
+assert_contains "[sa:on] is green" "$raw" $'\033[32m[sa:on]'
+
+# Session state file says disabled: gray [sa:off]
+reset_state
+printf 'disabled' > "$SA_STATE_DIR/claude-subagent-state-${SESSION}"
+out=$(SUBAGENT_MODE_STATE_DIR="$SA_STATE_DIR" run 100 500 10000 200 200000)
+assert_contains "state file disabled renders [sa:off]" "$out" "[sa:off]"
+
+# No state file: the global kill switch under $HOME/src/claude-config decides
+reset_state
+rm -f "$SA_STATE_DIR/claude-subagent-state-${SESSION}"
+touch "$TEST_HOME/src/claude-config/subagents-disabled"
+out=$(SUBAGENT_MODE_STATE_DIR="$SA_STATE_DIR" run 100 500 10000 200 200000)
+assert_contains "kill switch with no state file renders [sa:off]" "$out" "[sa:off]"
+
+# No state file, no kill switch: the mode defaults on
+reset_state
+rm -f "$TEST_HOME/src/claude-config/subagents-disabled"
+out=$(SUBAGENT_MODE_STATE_DIR="$SA_STATE_DIR" run 100 500 10000 200 200000)
+assert_contains "no state and no kill switch defaults to [sa:on]" "$out" "[sa:on]"
+
+# Uninstall the guard so later groups render without the segment, as before
+rm -rf "$TEST_HOME/src/claude-config"
+rm -rf "$SA_STATE_DIR"
 
 echo ""
 echo "=== Per-model weekly usage field (the Fable bucket) ==="
