@@ -21,13 +21,6 @@ unset STATUSLINE_PACE_SHOW_ON_PACE
 unset STATUSLINE_PACE_SHOW_COLD
 unset STATUSLINE_MODEL_BAR_WIDTH
 unset STATUSLINE_MODEL_USAGE_MAX_AGE
-unset STATUSLINE_MODEL_USAGE_CACHE
-unset STATUSLINE_MODEL_USAGE_REFRESH
-unset STATUSLINE_MODEL_USAGE_TTL
-unset STATUSLINE_MODEL_USAGE_REFRESHER
-unset STATUSLINE_MODEL_USAGE_FIXTURE
-unset STATUSLINE_MODEL_USAGE_FIXTURE_STATUS
-unset STATUSLINE_MODEL_USAGE_FIXTURE_RETRY_AFTER
 unset ANTHROPIC_API_KEY
 PASS=0
 FAIL=0
@@ -638,136 +631,32 @@ raw=$(STATUSLINE_JSON_PATH="$AUTH_JSON_DIR/enterprise.json" run_raw 100 500 1000
 assert_contains "auth letter uncolored" "$raw" "200k E "
 
 echo ""
-echo "=== Per-model weekly usage refresher (model-usage-refresh.sh) ==="
-
-# The StatuslineUpdate payload carries only five_hour/seven_day, so the per-model
-# weekly buckets (/usage's "Current week (Fable)") come from a separate fetch of
-# GET /api/oauth/usage. model-usage-refresh.sh does that fetch out-of-band and
-# writes a small cache the statusline reads. STATUSLINE_MODEL_USAGE_FIXTURE
-# replaces the network call with a saved response body (tests, debugging).
-
-REFRESHER="$SCRIPT_DIR/model-usage-refresh.sh"
-MU_DIR="/tmp/claude-statusline-mutest-$$"
-mkdir -p "$MU_DIR"
-MU_CACHE="$MU_DIR/model-usage.json"
-
-# A response shaped like the real one. Each of the two filters gets its own
-# discriminating entry: the Mythos row is model-scoped but NOT weekly, so only the
-# kind check drops it, and the scopeless row is weekly but NOT model-scoped, so
-# only the scope check drops it. Without both, one filter covers for the other and
-# the test passes with the filter deleted.
-cat > "$MU_DIR/usage.json" <<'EOF'
-{
-  "five_hour": { "utilization": 18, "resets_at": 1788000000 },
-  "seven_day": { "utilization": 3, "resets_at": 1788739200 },
-  "limits": [
-    { "kind": "five_hour", "percent": 18, "resets_at": 1788000000 },
-    { "kind": "five_hour_scoped", "percent": 77, "resets_at": 1788000000,
-      "scope": { "model": { "display_name": "Mythos" } } },
-    { "kind": "weekly_scoped", "percent": 4.7, "resets_at": 1788739200,
-      "scope": { "model": { "display_name": "Fable" } } },
-    { "kind": "weekly_scoped", "percent": 9, "resets_at": 1788739200, "scope": {} }
-  ]
-}
-EOF
-
-rm -f "$MU_CACHE"
-mu_rc=0
-STATUSLINE_MODEL_USAGE_CACHE="$MU_CACHE" \
-	STATUSLINE_MODEL_USAGE_FIXTURE="$MU_DIR/usage.json" \
-	bash "$REFRESHER" >/dev/null 2>&1 || mu_rc=$?
-if [ "$mu_rc" -eq 0 ]; then PASS=$((PASS + 1)); else
-	FAIL=$((FAIL + 1)); echo "FAIL: refresher exits 0 on a good response (got $mu_rc)"; fi
-mu_out=$(cat "$MU_CACHE" 2>/dev/null || echo "NO CACHE")
-assert_contains "refresher extracts the Fable bucket name" "$mu_out" '"name":"Fable"'
-assert_contains "refresher floors the percentage the way /usage does" "$mu_out" '"pct":4'
-assert_not_contains "refresher does not emit a fractional percentage" "$mu_out" '"pct":4.7'
-assert_contains "refresher keeps the bucket reset time" "$mu_out" '"resets_at":1788739200'
-assert_not_contains "refresher drops a model-scoped entry that is not weekly" "$mu_out" 'Mythos'
-assert_not_contains "refresher drops a non-weekly entry's percentage" "$mu_out" '"pct":77'
-assert_not_contains "refresher drops weekly entries with no model scope" "$mu_out" '"pct":9'
-
-# ts (data age) and checked_at (last attempt) are separate: the statusline hides a
-# stale field on ts and backs off respawning on checked_at.
-mu_ts=$(jq -r '.ts // 0' "$MU_CACHE" 2>/dev/null || echo 0)
-mu_checked=$(jq -r '.checked_at // 0' "$MU_CACHE" 2>/dev/null || echo 0)
-if [ "$mu_ts" = "$mu_checked" ] && [ "$mu_ts" -gt 1700000000 ] 2>/dev/null; then
-	PASS=$((PASS + 1))
-else
-	FAIL=$((FAIL + 1))
-	echo "FAIL: successful refresh stamps ts == checked_at"
-	echo "  got ts=$mu_ts checked_at=$mu_checked"
-fi
-
-# A failed fetch must not blank a good cache: the models survive, only checked_at
-# moves, so the display degrades by age rather than vanishing on one bad call.
-python3 - "$MU_CACHE" <<'PYEOF' 2>/dev/null || true
-import json, sys
-p = sys.argv[1]
-d = json.load(open(p))
-d["ts"] = d["checked_at"] = 1788000000
-json.dump(d, open(p, "w"))
-PYEOF
-STATUSLINE_MODEL_USAGE_CACHE="$MU_CACHE" \
-	STATUSLINE_MODEL_USAGE_FIXTURE="$MU_DIR/does-not-exist.json" \
-	bash "$REFRESHER" >/dev/null 2>&1 || true
-mu_out=$(cat "$MU_CACHE" 2>/dev/null || echo "NO CACHE")
-assert_contains "failed refresh keeps the previous buckets" "$mu_out" '"name":"Fable"'
-assert_contains "failed refresh keeps the previous data age" "$mu_out" '"ts":1788000000'
-mu_checked=$(jq -r '.checked_at // 0' "$MU_CACHE" 2>/dev/null || echo 0)
-if [ "$mu_checked" -gt 1788000000 ] 2>/dev/null; then
-	PASS=$((PASS + 1))
-else
-	FAIL=$((FAIL + 1))
-	echo "FAIL: failed refresh advances checked_at (backoff) without touching ts"
-	echo "  got checked_at=$mu_checked"
-fi
-
-# An error body (what an expired token returns) is not a usage body: it must leave
-# the previous buckets intact rather than parsing to an empty bucket list.
-python3 - "$MU_CACHE" <<'SEEDEOF' 2>/dev/null || true
-import json, sys
-p = sys.argv[1]
-d = json.load(open(p))
-d["ts"] = d["checked_at"] = 1788000000
-d["models"] = [{"name": "Fable", "pct": 4, "resets_at": 1788739200}]
-json.dump(d, open(p, "w"))
-SEEDEOF
-echo '{"error":{"type":"authentication_error","message":"invalid bearer token"}}' > "$MU_DIR/error.json"
-STATUSLINE_MODEL_USAGE_CACHE="$MU_CACHE" \
-	STATUSLINE_MODEL_USAGE_FIXTURE="$MU_DIR/error.json" \
-	bash "$REFRESHER" >/dev/null 2>&1 || true
-mu_out=$(cat "$MU_CACHE" 2>/dev/null || echo "NO CACHE")
-assert_contains "error body keeps the previous buckets" "$mu_out" '"name":"Fable"'
-assert_not_contains "error body does not blank the bucket list" "$mu_out" '"models":[]'
-
-# A response carrying no model buckets writes an empty list rather than failing.
-echo '{"five_hour":{"utilization":18},"limits":[]}' > "$MU_DIR/empty.json"
-rm -f "$MU_CACHE"
-STATUSLINE_MODEL_USAGE_CACHE="$MU_CACHE" \
-	STATUSLINE_MODEL_USAGE_FIXTURE="$MU_DIR/empty.json" \
-	bash "$REFRESHER" >/dev/null 2>&1 || true
-mu_out=$(cat "$MU_CACHE" 2>/dev/null || echo "NO CACHE")
-assert_contains "no buckets writes an empty list" "$mu_out" '"models":[]'
-
-rm -rf "$MU_DIR"
-
-echo ""
 echo "=== Per-model weekly usage bar (the Fable bucket) ==="
 
-# The refresher's cache is rendered as a field in the rate-limits section: the
-# model's initial, its weekly percentage, and a bar scaled 0-100% of that bucket.
-# The bucket shares the 7d reset, so no reset time is repeated.
+# Claude Code caches the whole usage response in ~/.claude.json as
+# cachedUsageUtilization, refreshed by its own polling. The per-model weekly
+# buckets (/usage's "Current week (Fable)") come from there, read in the same pass
+# that reads the auth letter. STATUSLINE_JSON_PATH points that file at a fixture.
 
-MU_R_DIR="/tmp/claude-statusline-murender-$$"
-mkdir -p "$MU_R_DIR"
-MU_R_CACHE="$MU_R_DIR/model-usage.json"
+MU_J_DIR="/tmp/claude-statusline-mujson-$$"
+mkdir -p "$MU_J_DIR"
+MU_J_FIXTURE="$MU_J_DIR/claude.json"
 
-# Write a cache whose data is $1 seconds old, carrying the models array $2.
-mu_cache_write() {
-	local age=$1 models=$2 stamp
-	stamp=$(( $(date +%s) - age ))
-	printf '{"ts":%s,"checked_at":%s,"models":%s}\n' "$stamp" "$stamp" "$models" > "$MU_R_CACHE"
+# $1 = age of the cached fetch in seconds, $2 = the limits[] array,
+# $3 = accountUuid on the cached block (default matches the logged-in account).
+mu_json_write() {
+	local age=$1 limits=$2 cached_uuid=${3:-acct-1} fetched
+	fetched=$(( ($(date +%s) - age) * 1000 ))
+	cat > "$MU_J_FIXTURE" <<EOF
+{
+  "oauthAccount": { "organizationType": "claude_max", "accountUuid": "acct-1" },
+  "cachedUsageUtilization": {
+    "fetchedAtMs": ${fetched},
+    "accountUuid": "${cached_uuid}",
+    "utilization": { "limits": ${limits} }
+  }
+}
+EOF
 }
 
 # A payload with both rate limits present and the pace meter suppressed: only ~13
@@ -780,318 +669,139 @@ limits_json() {
 }
 
 run_limits() {
-	limits_json | STATUSLINE_MODEL_USAGE_CACHE="$MU_R_CACHE" \
-		STATUSLINE_MODEL_USAGE_REFRESH=false bash "$STATUSLINE" | strip_ansi
+	limits_json | STATUSLINE_JSON_PATH="$MU_J_FIXTURE" bash "$STATUSLINE" | strip_ansi
 }
 
 run_limits_raw() {
-	limits_json | STATUSLINE_MODEL_USAGE_CACHE="$MU_R_CACHE" \
-		STATUSLINE_MODEL_USAGE_REFRESH=false bash "$STATUSLINE"
+	limits_json | STATUSLINE_JSON_PATH="$MU_J_FIXTURE" bash "$STATUSLINE"
 }
+
+FABLE_ONLY='[{"kind":"weekly_scoped","group":"weekly","percent":50,"resets_at":"2026-09-06T23:00:00Z","scope":{"model":{"display_name":"Fable"}}}]'
 
 # The bucket renders as initial, percentage, bar. 50% of 10 cells = 5 filled.
 reset_state
-mu_cache_write 60 '[{"name":"Fable","pct":50,"resets_at":1788739200}]'
+mu_json_write 60 "$FABLE_ONLY"
 out=$(STATUSLINE_MODEL_BAR_WIDTH=10 run_limits)
 assert_contains "model bucket renders initial, percentage and bar" "$out" "F 50% █████░░░░░"
 assert_contains "model bucket follows the 7d limit" "$out" "12% · F 50%"
 
+# The shared read must still produce the auth letter.
+assert_contains "auth letter survives the shared read" "$out" "1M M "
+
+# Each filter needs its own discriminating entry. The session row is model-scoped
+# but not weekly, so only the kind check drops it; the weekly_all row is weekly but
+# not model-scoped, so only the scope check drops it. With one entry doing both
+# jobs, either filter could be deleted and the test would still pass.
+reset_state
+mu_json_write 60 '[
+  {"kind":"session","group":"session","percent":18},
+  {"kind":"session_scoped","group":"session","percent":77,"scope":{"model":{"display_name":"Mythos"}}},
+  {"kind":"weekly_all","group":"weekly","percent":9},
+  {"kind":"weekly_scoped","group":"weekly","percent":4.7,"scope":{"model":{"display_name":"Fable"}}}
+]'
+out=$(STATUSLINE_MODEL_BAR_WIDTH=8 run_limits)
+assert_contains "floors the percentage the way /usage does" "$out" "F 4%"
+assert_not_contains "no fractional percentage is rendered" "$out" "F 4.7%"
+assert_not_contains "drops a model-scoped entry that is not weekly" "$out" "M 77%"
+assert_not_contains "drops a non-weekly entry's percentage" "$out" "77%"
+# This one pins the BEHAVIOR, not a single mechanism: the jq scope filter and the
+# renderer's empty-name guard (which the trailing newline needs anyway) each drop a
+# scopeless entry on their own, so deleting either leaves the test green.
+assert_not_contains "a weekly entry with no model scope does not render" "$out" "9%"
+
 # The initial comes from the server's display name, uppercased.
 reset_state
-mu_cache_write 60 '[{"name":"mythos","pct":30,"resets_at":1788739200}]'
+mu_json_write 60 '[{"kind":"weekly_scoped","percent":30,"scope":{"model":{"display_name":"mythos"}}}]'
 out=$(STATUSLINE_MODEL_BAR_WIDTH=10 run_limits)
 assert_contains "initial is uppercased from the display name" "$out" "M 30%"
 
-# Every model-scoped bucket renders, in the order the server returned them.
+# Every model-scoped bucket renders, in the order the file lists them.
 reset_state
-mu_cache_write 60 '[{"name":"Fable","pct":50,"resets_at":1788739200},{"name":"Opus","pct":20,"resets_at":1788739200}]'
+mu_json_write 60 '[
+  {"kind":"weekly_scoped","percent":50,"scope":{"model":{"display_name":"Fable"}}},
+  {"kind":"weekly_scoped","percent":20,"scope":{"model":{"display_name":"Opus"}}}
+]'
 out=$(STATUSLINE_MODEL_BAR_WIDTH=10 run_limits)
-assert_contains "first bucket renders" "$out" "F 50%"
-assert_contains "second bucket renders" "$out" "O 20%"
-assert_contains "buckets keep server order" "$out" "F 50% █████░░░░░ · O 20% ██░░░░░░░░"
+assert_contains "buckets keep file order" "$out" "F 50% █████░░░░░ · O 20% ██░░░░░░░░"
 
 # Bar width honors its own knob, independent of the context and pace bars.
 reset_state
-mu_cache_write 60 '[{"name":"Fable","pct":50,"resets_at":1788739200}]'
+mu_json_write 60 "$FABLE_ONLY"
 out=$(STATUSLINE_MODEL_BAR_WIDTH=4 run_limits)
 assert_contains "model bar width knob applies" "$out" "F 50% ██░░"
 
-# The fill rounds to nearest, matching the context bar: 7% of 8 cells is 0.56, which
-# rounds up to one cell rather than truncating to none.
+# The fill rounds to nearest, matching the context bar: 7% of 8 cells is 0.56,
+# which rounds up to one cell rather than truncating to none.
 reset_state
-mu_cache_write 60 '[{"name":"Fable","pct":7,"resets_at":1788739200}]'
+mu_json_write 60 '[{"kind":"weekly_scoped","percent":7,"scope":{"model":{"display_name":"Fable"}}}]'
 out=$(STATUSLINE_MODEL_BAR_WIDTH=8 run_limits)
 assert_contains "fill rounds to nearest, not down" "$out" "F 7% █░░░░░░░"
 
 # A low percentage still shows the number even when the bar rounds to empty: the
 # number carries precision the bar cannot.
 reset_state
-mu_cache_write 60 '[{"name":"Fable","pct":4,"resets_at":1788739200}]'
+mu_json_write 60 '[{"kind":"weekly_scoped","percent":4,"scope":{"model":{"display_name":"Fable"}}}]'
 out=$(STATUSLINE_MODEL_BAR_WIDTH=8 run_limits)
 assert_contains "low percentage keeps its number" "$out" "F 4% ░░░░░░░░"
 
-# No cache, no field. Nothing to say, so nothing is shown.
+# No cached usage block, no field. A fresh install has none until Claude Code polls.
 reset_state
-rm -f "$MU_R_CACHE"
+printf '{"oauthAccount":{"organizationType":"claude_max","accountUuid":"acct-1"}}\n' > "$MU_J_FIXTURE"
 out=$(run_limits)
-assert_not_contains "no cache hides the field" "$out" "F "
+assert_not_contains "absent cache block hides the field" "$out" "F "
+assert_contains "absent cache block still yields the auth letter" "$out" "1M M "
 
-# An empty bucket list is not a bucket: the field stays hidden.
+# A cached block with no model-scoped bucket is not a bucket.
 reset_state
-mu_cache_write 60 '[]'
+mu_json_write 60 '[{"kind":"weekly_all","group":"weekly","percent":3}]'
 out=$(run_limits)
-assert_not_contains "empty bucket list hides the field" "$out" "F "
+assert_not_contains "no model-scoped bucket hides the field" "$out" "F "
 
-# Data older than the max age is hidden rather than shown wrong. A refresher that
-# has been failing for hours must not leave a confident stale number on screen.
+# The cached block belongs to one account. After an account switch it describes
+# someone else's usage, so it is ignored rather than rendered.
 reset_state
-mu_cache_write 7200 '[{"name":"Fable","pct":50,"resets_at":1788739200}]'
-out=$(STATUSLINE_MODEL_USAGE_MAX_AGE=3600 run_limits)
+mu_json_write 60 "$FABLE_ONLY" "other-account"
+out=$(run_limits)
+assert_not_contains "a cache block from another account is ignored" "$out" "F 50%"
+
+# Claude Code's fetch can go stale (its polling is its own business), so data past
+# the max age is hidden rather than shown wrong.
+reset_state
+mu_json_write 30000 "$FABLE_ONLY"
+out=$(STATUSLINE_MODEL_USAGE_MAX_AGE=21600 run_limits)
 assert_not_contains "stale data is hidden" "$out" "F 50%"
 
 reset_state
-mu_cache_write 1800 '[{"name":"Fable","pct":50,"resets_at":1788739200}]'
-out=$(STATUSLINE_MODEL_USAGE_MAX_AGE=3600 run_limits)
+mu_json_write 1800 "$FABLE_ONLY"
+out=$(STATUSLINE_MODEL_USAGE_MAX_AGE=21600 run_limits)
 assert_contains "data within the max age is shown" "$out" "F 50%"
 
 # The color ladder matches the neighbouring limits: gray under 50, yellow 50-79,
 # red at 80 and over.
 reset_state
-mu_cache_write 60 '[{"name":"Fable","pct":49,"resets_at":1788739200}]'
+mu_json_write 60 '[{"kind":"weekly_scoped","percent":49,"scope":{"model":{"display_name":"Fable"}}}]'
 raw=$(run_limits_raw)
 assert_contains "under 50% is normal gray" "$raw" $'\033[38;5;245mF 49%'
 
 reset_state
-mu_cache_write 60 '[{"name":"Fable","pct":50,"resets_at":1788739200}]'
+mu_json_write 60 "$FABLE_ONLY"
 raw=$(run_limits_raw)
 assert_contains "50% is yellow" "$raw" $'\033[33mF 50%'
 
 reset_state
-mu_cache_write 60 '[{"name":"Fable","pct":80,"resets_at":1788739200}]'
+mu_json_write 60 '[{"kind":"weekly_scoped","percent":80,"scope":{"model":{"display_name":"Fable"}}}]'
 raw=$(run_limits_raw)
 assert_contains "80% is red" "$raw" $'\033[31mF 80%'
 
 # A session with no plan rate limits (API key, Bedrock, Vertex) has no plan buckets
-# either, so the whole section stays absent even with a cache present.
+# either, so the whole section stays absent even with a populated cache block.
 reset_state
-mu_cache_write 60 '[{"name":"Fable","pct":50,"resets_at":1788739200}]'
+mu_json_write 60 "$FABLE_ONLY"
 out=$(mock_json 100 500 10000 200 200000 \
-	| STATUSLINE_MODEL_USAGE_CACHE="$MU_R_CACHE" STATUSLINE_MODEL_USAGE_REFRESH=false \
-	  bash "$STATUSLINE" | strip_ansi)
+	| STATUSLINE_JSON_PATH="$MU_J_FIXTURE" bash "$STATUSLINE" | strip_ansi)
 assert_not_contains "no plan limits hides the model bucket too" "$out" "F 50%"
 
-rm -rf "$MU_R_DIR"
-
-echo ""
-echo "=== Per-model usage auto-refresh spawn ==="
-
-# Nothing else drives the refresher, so the statusline spawns it detached when the
-# cache goes stale. The spawn must never delay or alter a render.
-
-MU_S_DIR="/tmp/claude-statusline-muspawn-$$"
-mkdir -p "$MU_S_DIR"
-MU_S_CACHE="$MU_S_DIR/model-usage.json"
-MU_S_SENTINEL="$MU_S_DIR/spawned"
-
-# A stub standing in for model-usage-refresh.sh: it records that it ran.
-cat > "$MU_S_DIR/stub.sh" <<'EOF'
-#!/usr/bin/env bash
-date +%s >> "$MU_SPAWN_SENTINEL"
-EOF
-chmod +x "$MU_S_DIR/stub.sh"
-
-# Write a cache whose checked_at is $1 seconds old.
-mu_spawn_cache() {
-	local age=$1 stamp
-	stamp=$(( $(date +%s) - age ))
-	printf '{"ts":%s,"checked_at":%s,"models":[{"name":"Fable","pct":4,"resets_at":1788739200}]}\n' \
-		"$stamp" "$stamp" > "$MU_S_CACHE"
-}
-
-# The spawn is detached, so poll briefly rather than assuming it has landed.
-mu_spawned() {
-	local i=0
-	while [ "$i" -lt 40 ]; do
-		[ -s "$MU_S_SENTINEL" ] && return 0
-		sleep 0.05
-		i=$((i + 1))
-	done
-	return 1
-}
-
-run_spawn() {
-	limits_json | env MU_SPAWN_SENTINEL="$MU_S_SENTINEL" \
-		STATUSLINE_MODEL_USAGE_CACHE="$MU_S_CACHE" \
-		STATUSLINE_MODEL_USAGE_REFRESHER="$MU_S_DIR/stub.sh" \
-		"$@" bash "$STATUSLINE" | strip_ansi
-}
-
-# No cache at all: the first render is what bootstraps the fetch.
-reset_state
-rm -f "$MU_S_CACHE" "$MU_S_SENTINEL"
-out=$(run_spawn)
-if mu_spawned; then PASS=$((PASS + 1)); else
-	FAIL=$((FAIL + 1)); echo "FAIL: missing cache spawns the refresher"; fi
-
-# Stale attempt: past the TTL, try again.
-reset_state
-rm -f "$MU_S_SENTINEL"
-mu_spawn_cache 600
-out=$(run_spawn STATUSLINE_MODEL_USAGE_TTL=300)
-if mu_spawned; then PASS=$((PASS + 1)); else
-	FAIL=$((FAIL + 1)); echo "FAIL: attempt older than the TTL spawns the refresher"; fi
-assert_contains "a spawning render still shows the cached bucket" "$out" "F 4%"
-
-# Fresh attempt: no spawn. Renders happen many times a second, so a fresh cache
-# must not fire a fetch per render.
-reset_state
-rm -f "$MU_S_SENTINEL"
-mu_spawn_cache 60
-out=$(run_spawn STATUSLINE_MODEL_USAGE_TTL=300)
-if mu_spawned; then
-	FAIL=$((FAIL + 1)); echo "FAIL: a fresh attempt must not spawn the refresher"
-else PASS=$((PASS + 1)); fi
-
-# The network call is opt-out: setting the switch to false stops the spawn while
-# still rendering whatever the cache already holds.
-reset_state
-rm -f "$MU_S_SENTINEL"
-mu_spawn_cache 600
-out=$(run_spawn STATUSLINE_MODEL_USAGE_TTL=300 STATUSLINE_MODEL_USAGE_REFRESH=false)
-if mu_spawned; then
-	FAIL=$((FAIL + 1)); echo "FAIL: STATUSLINE_MODEL_USAGE_REFRESH=false must stop the spawn"
-else PASS=$((PASS + 1)); fi
-assert_contains "refresh disabled still renders the cache" "$out" "F 4%"
-
-# Stale DATA with a fresh ATTEMPT: the field hides (data too old) and no spawn
-# fires (we just tried). The two timestamps are read independently.
-reset_state
-rm -f "$MU_S_SENTINEL"
-stamp_now=$(date +%s)
-printf '{"ts":%s,"checked_at":%s,"models":[{"name":"Fable","pct":4,"resets_at":1788739200}]}\n' \
-	"$((stamp_now - 7200))" "$stamp_now" > "$MU_S_CACHE"
-out=$(run_spawn STATUSLINE_MODEL_USAGE_TTL=300 STATUSLINE_MODEL_USAGE_MAX_AGE=3600)
-assert_not_contains "stale data hides even with a fresh attempt" "$out" "F 4%"
-if mu_spawned; then
-	FAIL=$((FAIL + 1)); echo "FAIL: a fresh attempt must not spawn even when the data is stale"
-else PASS=$((PASS + 1)); fi
-
-rm -rf "$MU_S_DIR"
-
-echo ""
-echo "=== Per-model usage: the endpoint's retry-after is binding ==="
-
-# The usage endpoint rate-limits per account on an hours-scale window and Claude
-# Code's own /usage polling shares that budget, so a 429 with a retry-after of
-# roughly an hour is a normal outcome. The refresher records when the server said
-# to come back, and the spawn gate refuses to call before then.
-
-MU_A_DIR="/tmp/claude-statusline-muafter-$$"
-mkdir -p "$MU_A_DIR"
-MU_A_CACHE="$MU_A_DIR/model-usage.json"
-REFRESHER="$SCRIPT_DIR/model-usage-refresh.sh"
-
-cat > "$MU_A_DIR/usage.json" <<'EOF'
-{ "five_hour": { "utilization": 18 },
-  "limits": [ { "kind": "weekly_scoped", "percent": 4, "resets_at": 1788739200,
-                "scope": { "model": { "display_name": "Fable" } } } ] }
-EOF
-echo '{"error":{"type":"rate_limit_error","message":"Rate limited. Please try again later."}}' \
-	> "$MU_A_DIR/throttled.json"
-
-# Seed a good cache, then get throttled.
-rm -f "$MU_A_CACHE"
-STATUSLINE_MODEL_USAGE_CACHE="$MU_A_CACHE" \
-	STATUSLINE_MODEL_USAGE_FIXTURE="$MU_A_DIR/usage.json" \
-	bash "$REFRESHER" >/dev/null 2>&1 || true
-STATUSLINE_MODEL_USAGE_CACHE="$MU_A_CACHE" \
-	STATUSLINE_MODEL_USAGE_FIXTURE="$MU_A_DIR/throttled.json" \
-	STATUSLINE_MODEL_USAGE_FIXTURE_STATUS=429 \
-	STATUSLINE_MODEL_USAGE_FIXTURE_RETRY_AFTER=3387 \
-	bash "$REFRESHER" >/dev/null 2>&1 || true
-
-mu_a_retry=$(jq -r '.retry_after // 0' "$MU_A_CACHE" 2>/dev/null || echo 0)
-mu_a_expected=$(( $(date +%s) + 3387 ))
-if [ "$mu_a_retry" -gt $((mu_a_expected - 60)) ] && [ "$mu_a_retry" -lt $((mu_a_expected + 60)) ] 2>/dev/null; then
-	PASS=$((PASS + 1))
-else
-	FAIL=$((FAIL + 1))
-	echo "FAIL: a 429 records retry_after as an absolute epoch"
-	echo "  expected near $mu_a_expected, got $mu_a_retry"
-fi
-mu_a_out=$(cat "$MU_A_CACHE" 2>/dev/null || echo "NO CACHE")
-assert_contains "a 429 keeps the previous buckets" "$mu_a_out" '"name":"Fable"'
-
-# A later success clears the deadline, so one throttled hour does not park the
-# refresher forever.
-STATUSLINE_MODEL_USAGE_CACHE="$MU_A_CACHE" \
-	STATUSLINE_MODEL_USAGE_FIXTURE="$MU_A_DIR/usage.json" \
-	bash "$REFRESHER" >/dev/null 2>&1 || true
-mu_a_retry=$(jq -r '.retry_after // 0' "$MU_A_CACHE" 2>/dev/null || echo 0)
-if [ "$mu_a_retry" -eq 0 ] 2>/dev/null; then PASS=$((PASS + 1)); else
-	FAIL=$((FAIL + 1)); echo "FAIL: a success clears retry_after (got $mu_a_retry)"; fi
-
-# A non-200 never reaches the parse, even when its body would parse cleanly. The
-# fixture here is a VALID usage body naming a different bucket, so a status check
-# that does not fire is visible: the cache would flip from Fable to Mythos.
-cat > "$MU_A_DIR/wrong-bucket.json" <<'EOF'
-{ "five_hour": { "utilization": 18 },
-  "limits": [ { "kind": "weekly_scoped", "percent": 90, "resets_at": 1788739200,
-                "scope": { "model": { "display_name": "Mythos" } } } ] }
-EOF
-STATUSLINE_MODEL_USAGE_CACHE="$MU_A_CACHE" \
-	STATUSLINE_MODEL_USAGE_FIXTURE="$MU_A_DIR/wrong-bucket.json" \
-	STATUSLINE_MODEL_USAGE_FIXTURE_STATUS=500 \
-	bash "$REFRESHER" >/dev/null 2>&1 || true
-mu_a_out=$(cat "$MU_A_CACHE" 2>/dev/null || echo "NO CACHE")
-assert_contains "a 500 keeps the previous buckets" "$mu_a_out" '"name":"Fable"'
-assert_not_contains "a 500 body is never parsed into the cache" "$mu_a_out" 'Mythos'
-
-# The spawn gate honors the deadline: past the TTL but inside retry_after, no call.
-MU_A_SENTINEL="$MU_A_DIR/spawned"
-cat > "$MU_A_DIR/stub.sh" <<'EOF'
-#!/usr/bin/env bash
-date +%s >> "$MU_SPAWN_SENTINEL"
-EOF
-chmod +x "$MU_A_DIR/stub.sh"
-
-mu_a_spawned() {
-	local i=0
-	while [ "$i" -lt 40 ]; do
-		[ -s "$MU_A_SENTINEL" ] && return 0
-		sleep 0.05
-		i=$((i + 1))
-	done
-	return 1
-}
-
-run_after() {
-	limits_json | env MU_SPAWN_SENTINEL="$MU_A_SENTINEL" \
-		STATUSLINE_MODEL_USAGE_CACHE="$MU_A_CACHE" \
-		STATUSLINE_MODEL_USAGE_REFRESHER="$MU_A_DIR/stub.sh" \
-		"$@" bash "$STATUSLINE" | strip_ansi
-}
-
-reset_state
-rm -f "$MU_A_SENTINEL"
-printf '{"ts":%s,"checked_at":%s,"retry_after":%s,"models":[{"name":"Fable","pct":4,"resets_at":1788739200}]}\n' \
-	"$(( $(date +%s) - 60 ))" "$(( $(date +%s) - 6000 ))" "$(( $(date +%s) + 1800 ))" > "$MU_A_CACHE"
-out=$(run_after STATUSLINE_MODEL_USAGE_TTL=900)
-if mu_a_spawned; then
-	FAIL=$((FAIL + 1)); echo "FAIL: an unexpired retry_after must block the spawn"
-else PASS=$((PASS + 1)); fi
-assert_contains "a blocked spawn still renders the cache" "$out" "F 4%"
-
-# Once the deadline has passed, the TTL governs again.
-reset_state
-rm -f "$MU_A_SENTINEL"
-printf '{"ts":%s,"checked_at":%s,"retry_after":%s,"models":[{"name":"Fable","pct":4,"resets_at":1788739200}]}\n' \
-	"$(( $(date +%s) - 60 ))" "$(( $(date +%s) - 6000 ))" "$(( $(date +%s) - 10 ))" > "$MU_A_CACHE"
-out=$(run_after STATUSLINE_MODEL_USAGE_TTL=900)
-if mu_a_spawned; then PASS=$((PASS + 1)); else
-	FAIL=$((FAIL + 1)); echo "FAIL: an expired retry_after lets the TTL govern again"; fi
-
-rm -rf "$MU_A_DIR"
+rm -rf "$MU_J_DIR"
 
 echo ""
 echo "=== Results ==="
