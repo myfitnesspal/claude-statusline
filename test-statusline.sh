@@ -26,6 +26,15 @@ PASS=0
 FAIL=0
 SESSION="test-$$"
 
+# The statusline writes a usage snapshot under $HOME/.claude-statusline on every
+# render, so the whole suite runs against a throwaway HOME. Without this, 18 test
+# invocations append to the developer's real history file, and any mutation-testing
+# pass that reverses the append into a truncate destroys it. Nothing here needs the
+# real home: the auth fixture comes from STATUSLINE_JSON_PATH, which every test sets.
+TEST_HOME="/tmp/claude-statusline-home-$$"
+mkdir -p "$TEST_HOME"
+export HOME="$TEST_HOME"
+
 # Auth fixtures: statusline reads oauthAccount from STATUSLINE_JSON_PATH.
 # Default all tests to a logged-out fixture so the developer's real
 # ~/.claude.json doesn't leak into assertions.
@@ -45,6 +54,7 @@ cleanup() {
 	rm -f "/tmp/claude-statusline-newround-${SESSION}"
 	rm -rf "/tmp/claude-usage-${SESSION}.json"
 	rm -rf "$AUTH_JSON_DIR"
+	rm -rf "$TEST_HOME"
 }
 trap cleanup EXIT
 
@@ -903,6 +913,23 @@ else
 fi
 
 rm -rf "$MU_H_HOME"
+
+echo ""
+echo "=== The suite does not write to the real home ==="
+
+# Isolation is a property of the harness, not of test discipline: this asserts the
+# throwaway HOME is actually in effect, so a render cannot reach the developer's
+# own usage history.
+reset_state
+out=$(run 100 500 10000 200 200000)
+if [ "$HOME" = "$TEST_HOME" ]; then PASS=$((PASS + 1)); else
+	FAIL=$((FAIL + 1)); echo "FAIL: the suite must run under a throwaway HOME (got $HOME)"; fi
+if [ -s "$TEST_HOME/.claude-statusline/usage-history.jsonl" ]; then
+	PASS=$((PASS + 1))
+else
+	FAIL=$((FAIL + 1))
+	echo "FAIL: renders must land their history under the throwaway HOME"
+fi
 
 echo ""
 echo "=== Results ==="
