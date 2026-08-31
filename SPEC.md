@@ -137,6 +137,57 @@ Format (v6): `6|round_start_cost`
 New-round marker: `/tmp/claude-statusline-newround-{session_id}`
 Created by `round-reset.sh` on `UserPromptSubmit` hook, consumed by statusline on next update.
 
+## Per-Model Weekly Usage
+
+The `StatuslineUpdate` payload's `rate_limits` object is built from three sources:
+`five_hour`, `seven_day`, and `spend_limit` (gateway sessions only). No per-model
+window reaches the hook, so the buckets `/usage` renders as `Current week (Fable)`
+are not available from the payload at all.
+
+`model-usage-refresh.sh` fetches them from the endpoint `/usage` itself calls:
+
+```
+GET https://api.anthropic.com/api/oauth/usage
+Authorization: Bearer <OAuth access token>
+```
+
+Each per-model bucket is a `limits[]` entry whose `kind` is `weekly_scoped` and
+which carries a `scope.model.display_name`. Its `percent` runs 0-100 and is floored,
+so the statusline shows the same integer the `/usage` dialog does. The access token
+comes from `~/.claude/.credentials.json` (`.claudeAiOauth.accessToken`), falling
+back to the macOS keychain entry `Claude Code-credentials`.
+
+### The fetch never runs in the render path
+
+A statusline render must not block on the network. The refresher runs out of band
+and writes a cache; the statusline only ever reads that cache.
+
+Cache file (`STATUSLINE_MODEL_USAGE_CACHE`, default
+`~/.claude-statusline/model-usage.json`):
+
+```json
+{ "ts": 1788000000, "checked_at": 1788000600,
+  "models": [ { "name": "Fable", "pct": 4, "resets_at": 1788739200 } ] }
+```
+
+The two timestamps carry different facts. `ts` is how old the numbers are, and the
+statusline hides a field whose `ts` is too old rather than showing a wrong one.
+`checked_at` is when a fetch was last attempted, and the respawn backoff keys on it.
+
+A failed fetch advances `checked_at`, keeps `ts` and `models` untouched, and exits
+non-zero. One bad call therefore degrades the display by age instead of blanking it.
+A response that is not a usage body (an expired token returns an error object) takes
+the same path, which is why the parse validates for a known window key before
+extracting: an unvalidated parse would quietly write an empty bucket list and the
+field would vanish while looking healthy.
+
+Concurrent sessions each spawn their own refresher, so the cache write is a
+rename from a pid-suffixed tmp file, and a `mkdir` lock beside the cache admits one
+fetch at a time. A lock older than 120 seconds is treated as abandoned.
+
+Errors land in `model-usage.log` beside the cache, because a detached process has
+nowhere else to put stderr. The log is truncated past 64KB.
+
 ## Auto-Compact Threshold Derivation
 
 Reverse-engineered from Claude Code binary (see CLAUDE.md for re-derivation instructions):
@@ -162,6 +213,10 @@ Approximated as `ctx_max - 33000`. Override with `STATUSLINE_COMPACT_OVERHEAD` e
 | `STATUSLINE_PACE_WORK` | unset | Your weekly work schedule (`"<days> <start>-<end>"` local 24h, e.g. `"Mon-Fri 09-18"`; days a range like `Mon-Fri` or a comma list like `Mon,Wed,Fri`; hours `HH` or `HH:MM`). The 7d pace meter judges pace against your work schedule instead of the reset (see below). Unset = judge to the reset. |
 | `STATUSLINE_PACE_HORIZON_TS` | unset | Absolute-epoch override of the computed horizon (advanced / tests). Takes precedence over `STATUSLINE_PACE_WORK`. |
 | `STATUSLINE_JSON_PATH` | `~/.claude.json` | Credential file the auth/plan letter reads (tests point it at fixtures). |
+| `STATUSLINE_MODEL_USAGE_CACHE` | `~/.claude-statusline/model-usage.json` | Per-model weekly usage cache the refresher writes and the statusline reads. |
+| `STATUSLINE_MODEL_USAGE_FIXTURE` | unset | Refresher reads this saved response body instead of calling the API (tests, debugging). |
+| `STATUSLINE_MODEL_USAGE_URL` | the oauth usage endpoint | Refresher endpoint override. |
+| `STATUSLINE_MODEL_USAGE_TIMEOUT` | 10 | Refresher curl timeout, in seconds. |
 
 ### 7d pace meter (bidirectional gas-pedal)
 
