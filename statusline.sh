@@ -577,8 +577,16 @@ if [ -n "$limit_5h" ]; then
 	# the meter stays at the right edge of the section. Outside the 7d branch so the
 	# buckets still render on a payload that carries no 7d window, since they come
 	# from a different source than the payload.
-	limit_parts="${limit_parts}$(fmt_model_usage)"
-	[ -n "$limit_7d" ] && limit_parts="${limit_parts}$(fmt_pace "$limit_7d" "$limit_7d_reset")"
+	model_parts=$(fmt_model_usage)
+	limit_parts="${limit_parts}${model_parts}"
+	if [ -n "$limit_7d" ]; then
+		pace_parts=$(fmt_pace "$limit_7d" "$limit_7d_reset")
+		# A dot separates the bucket from the meter, matching every other field
+		# boundary in this section. Without a bucket the meter stays against the 7d
+		# percentage it describes, so the dot appears only when something sits between.
+		[ -n "$model_parts" ] && [ -n "$pace_parts" ] && limit_parts="${limit_parts} ·"
+		limit_parts="${limit_parts}${pace_parts}"
+	fi
 	parts="${parts} | ${limit_parts}"
 fi
 parts="${parts} | ${cost_fmt}${RESET}"
