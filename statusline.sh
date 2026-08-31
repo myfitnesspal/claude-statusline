@@ -503,7 +503,7 @@ fmt_pace() {
 # between that number and the 7d pace meter so the meter keeps the section's right
 # edge.
 #
-# Staleness is handled two ways, because the cache can be an hour behind and this
+# Staleness needs handling here, because the cache can be an hour behind and this
 # number is one you throttle against.
 #
 # Past STATUSLINE_MODEL_USAGE_MAX_AGE the field is hidden. That threshold is Claude
@@ -523,9 +523,9 @@ fmt_model_usage() {
 	case "$cj_fetched" in ''|*[!0-9]*) return ;; esac
 	[ "$cj_fetched" -le 0 ] && return
 	local age=$((now - cj_fetched)) initial pct color
-	# A stamp in the future is not trustworthy. Without this, clock skew makes both
-	# comparisons below false and buys the reads-as-current outcome the two
-	# thresholds exist to prevent.
+	# A stamp in the future is not trustworthy. Without this, clock skew makes the
+	# cutoff comparison below false and buys the reads-as-current outcome that
+	# cutoff exists to prevent.
 	[ "$age" -lt 0 ] && return
 	[ "$age" -gt "$STATUSLINE_MODEL_USAGE_MAX_AGE" ] && return
 	# The first field is already a single uppercase alphanumeric character, produced
