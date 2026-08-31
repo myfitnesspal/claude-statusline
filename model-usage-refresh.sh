@@ -19,6 +19,15 @@
 #   STATUSLINE_MODEL_USAGE_FIXTURE  read this file instead of calling the API (tests, debugging)
 #   STATUSLINE_MODEL_USAGE_URL      endpoint override (default the production oauth usage endpoint)
 #   STATUSLINE_MODEL_USAGE_TIMEOUT  curl timeout in seconds (default 10)
+#   STATUSLINE_MODEL_USAGE_FIXTURE_STATUS       HTTP status to simulate with a fixture (default 200)
+#   STATUSLINE_MODEL_USAGE_FIXTURE_RETRY_AFTER  retry-after seconds to simulate with a fixture
+#
+# THE ENDPOINT IS RATE LIMITED PER ACCOUNT, on an hours-scale window, and Claude
+# Code's own /usage polling spends the same budget. A 429 carrying
+# `retry-after: 3387` is a normal outcome, not a malfunction (measured 2026-08-31:
+# the first call this script ever made was already throttled). So a 429 is recorded
+# rather than retried: the absolute epoch the server named goes in the cache, and
+# the statusline refuses to spawn again before it.
 
 set -uo pipefail
 
@@ -53,18 +62,24 @@ write_cache() {
 	mv -f "$tmp" "$CACHE" 2>/dev/null || { log "cache rename failed: $tmp -> $CACHE"; rm -f "$tmp"; return 1; }
 }
 
-# Record the attempt without touching the data. `ts` is how old the numbers are,
-# `checked_at` is when we last tried: the statusline hides a stale field on `ts`
-# and backs off respawning on `checked_at`. Keeping the previous buckets means one
-# failed call degrades the display by age instead of blanking it.
+# Record the attempt without touching the data. The three timestamps answer three
+# different questions: `ts` is how old the numbers are, so the statusline hides a
+# stale field on it; `checked_at` is when we last tried, so respawn backs off on it;
+# `retry_after` is the absolute epoch the server told us to come back, so the spawn
+# refuses outright before it. Keeping the previous buckets means one failed call
+# degrades the display by age instead of blanking it.
+#
+# $1 = retry deadline as an absolute epoch, or 0 when the server named none.
 record_failed_attempt() {
-	local prev_ts=0 prev_models='[]'
+	local retry_at=${1:-0} prev_ts=0 prev_models='[]'
 	if [ -f "$CACHE" ]; then
 		prev_ts=$(jq -r '.ts // 0' "$CACHE" 2>/dev/null) || prev_ts=0
 		prev_models=$(jq -c '.models // []' "$CACHE" 2>/dev/null) || prev_models='[]'
 	fi
 	case "$prev_ts" in ''|*[!0-9]*) prev_ts=0 ;; esac
-	write_cache "$(printf '{"ts":%s,"checked_at":%s,"models":%s}' "$prev_ts" "$now" "$prev_models")"
+	case "$retry_at" in ''|*[!0-9]*) retry_at=0 ;; esac
+	write_cache "$(printf '{"ts":%s,"checked_at":%s,"retry_after":%s,"models":%s}' \
+		"$prev_ts" "$now" "$retry_at" "$prev_models")"
 }
 
 # One refresher at a time per cache. mkdir is the atomic test-and-set; a lock older
@@ -106,29 +121,61 @@ fi
 trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
 
 # Fetch the usage body: a saved fixture when one is named, else the live endpoint.
+# Both paths produce the same three values, so the status handling below has one
+# code path rather than a live branch the tests cannot reach.
 body=""
+http_code=200
+retry_secs=0
+
 if [ -n "${STATUSLINE_MODEL_USAGE_FIXTURE:-}" ]; then
-	if [ -f "$STATUSLINE_MODEL_USAGE_FIXTURE" ]; then
-		body=$(cat "$STATUSLINE_MODEL_USAGE_FIXTURE")
-	else
+	if [ ! -f "$STATUSLINE_MODEL_USAGE_FIXTURE" ]; then
 		log "fixture not found: $STATUSLINE_MODEL_USAGE_FIXTURE"
-		record_failed_attempt
+		record_failed_attempt 0
 		exit 1
 	fi
+	body=$(cat "$STATUSLINE_MODEL_USAGE_FIXTURE")
+	http_code=${STATUSLINE_MODEL_USAGE_FIXTURE_STATUS:-200}
+	retry_secs=${STATUSLINE_MODEL_USAGE_FIXTURE_RETRY_AFTER:-0}
 else
 	token=$(read_token) || {
 		log "no OAuth access token in ~/.claude/.credentials.json or the keychain"
-		record_failed_attempt
+		record_failed_attempt 0
 		exit 1
 	}
-	body=$(curl -sS --max-time "$TIMEOUT" \
+	body_file="$CACHE.body.$$"
+	hdr_file="$CACHE.hdr.$$"
+	http_code=$(curl -sS --max-time "$TIMEOUT" \
+		-o "$body_file" -D "$hdr_file" -w '%{http_code}' \
 		-H "Authorization: Bearer $token" \
 		-H "Content-Type: application/json" \
 		"$URL" 2>>"$LOG") || {
-		log "fetch failed: curl exited $? for $URL"
-		record_failed_attempt
+		log "fetch failed: curl could not complete a request to $URL"
+		rm -f "$body_file" "$hdr_file"
+		record_failed_attempt 0
 		exit 1
 	}
+	body=$(cat "$body_file" 2>/dev/null)
+	# retry-after is seconds here, not a date, on every response measured so far.
+	retry_secs=$(awk 'BEGIN{IGNORECASE=1} /^retry-after:/ {gsub(/[^0-9]/, "", $2); print $2; exit}' \
+		"$hdr_file" 2>/dev/null)
+	rm -f "$body_file" "$hdr_file"
+fi
+
+case "$http_code" in ''|*[!0-9]*) http_code=0 ;; esac
+case "$retry_secs" in ''|*[!0-9]*) retry_secs=0 ;; esac
+retry_at=0
+[ "$retry_secs" -gt 0 ] && retry_at=$((now + retry_secs))
+
+# A non-200 never reaches the parse. An error body can be perfectly good JSON, and
+# parsing it would write an empty bucket list over a healthy cache.
+if [ "$http_code" -ne 200 ]; then
+	if [ "$retry_at" -gt 0 ]; then
+		log "HTTP $http_code; server asked for ${retry_secs}s, not retrying before $retry_at"
+	else
+		log "HTTP $http_code with no retry-after; keeping previous data"
+	fi
+	record_failed_attempt "$retry_at"
+	exit 1
 fi
 
 # A usage body is an object carrying at least one known window key. Anything else
@@ -143,7 +190,7 @@ parsed=$(printf '%s' "$body" | jq -c --argjson now "$now" '
 	if type != "object" then error("not an object")
 	elif (keys - known) == keys then error("no usage window keys")
 	else . end
-	| { ts: $now, checked_at: $now,
+	| { ts: $now, checked_at: $now, retry_after: 0,
 	    models: [ .limits[]?
 	      | select(.kind == "weekly_scoped")
 	      | select(.scope.model.display_name != null)
@@ -152,8 +199,8 @@ parsed=$(printf '%s' "$body" | jq -c --argjson now "$now" '
 	          resets_at: (.resets_at // null) } ] }' 2>>"$LOG") || parsed=""
 
 if [ -z "$parsed" ]; then
-	log "response was not a usage body; keeping previous data"
-	record_failed_attempt
+	log "a 200 response was not a usage body; keeping previous data"
+	record_failed_attempt 0
 	exit 1
 fi
 

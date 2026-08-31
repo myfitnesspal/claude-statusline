@@ -166,6 +166,31 @@ so the statusline shows the same integer the `/usage` dialog does. The access to
 comes from `~/.claude/.credentials.json` (`.claudeAiOauth.accessToken`), falling
 back to the macOS keychain entry `Claude Code-credentials`.
 
+### The endpoint is rate limited per account, and Claude Code shares the budget
+
+The window is hours long, and Claude Code's own `/usage` polling spends the same
+allowance. Measured 2026-08-31: the very first call this repo ever made came back
+`HTTP 429` with `retry-after: 3387`, meaning the budget was already spent by the
+running session. A 429 is therefore a normal outcome rather than a malfunction, and
+retrying through it is pointless.
+
+So the refresher records the deadline instead of retrying. It converts the
+`retry-after` seconds to an absolute epoch, stores it as `retry_after`, and the
+statusline refuses to spawn again before that moment. A later success writes
+`retry_after: 0`, so one throttled hour does not park the refresher permanently.
+
+This is what sets the cadence. `STATUSLINE_MODEL_USAGE_TTL` defaults to 900 seconds
+rather than anything shorter, because sub-window polling cannot succeed, and
+`STATUSLINE_MODEL_USAGE_MAX_AGE` defaults to 6 hours rather than 1, because a
+1-hour cutoff would hide the field through every throttled window. Six hours is
+tolerable for a weekly bucket: the number moves a few points per day, so a
+six-hour-old reading is off by well under a point, while its job stays intact,
+which is catching a refresher that has been dead since yesterday.
+
+A non-200 never reaches the parse. An error body is often valid JSON, so parsing it
+would write an empty bucket list over a healthy cache, and the field would vanish
+with nothing looking broken.
+
 ### The fetch never runs in the render path
 
 A statusline render must not block on the network. The refresher runs out of band
@@ -175,13 +200,18 @@ Cache file (`STATUSLINE_MODEL_USAGE_CACHE`, default
 `~/.claude-statusline/model-usage.json`):
 
 ```json
-{ "ts": 1788000000, "checked_at": 1788000600,
+{ "ts": 1788000000, "checked_at": 1788000600, "retry_after": 0,
   "models": [ { "name": "Fable", "pct": 4, "resets_at": 1788739200 } ] }
 ```
 
-The two timestamps carry different facts. `ts` is how old the numbers are, and the
-statusline hides a field whose `ts` is too old rather than showing a wrong one.
-`checked_at` is when a fetch was last attempted, and the respawn backoff keys on it.
+The three timestamps answer three different questions.
+
+- `ts` is how old the numbers are. The statusline hides a field whose `ts` has aged
+  past `STATUSLINE_MODEL_USAGE_MAX_AGE` rather than showing a wrong one.
+- `checked_at` is when a fetch was last attempted. The respawn backoff keys on it,
+  so a refresher that keeps failing retries once per TTL and not once per render.
+- `retry_after` is the absolute epoch the server told us to come back, or 0. The
+  spawn refuses outright before it, whatever the TTL says.
 
 A failed fetch advances `checked_at`, keeps `ts` and `models` untouched, and exits
 non-zero. One bad call therefore degrades the display by age instead of blanking it.
@@ -200,6 +230,9 @@ output discarded. The render itself never waits.
 The spawn keys on `checked_at`, not `ts`. A refresher that keeps failing therefore
 retries once per TTL rather than once per render, while the field still hides itself
 as soon as the data ages past `STATUSLINE_MODEL_USAGE_MAX_AGE`.
+
+A `retry_after` deadline outranks the TTL entirely: calling before it earns another
+429 and nothing else.
 
 `STATUSLINE_MODEL_USAGE_REFRESH=false` opts out of the network call entirely.
 Cached buckets still render, so the switch stops fetching without blanking the field.
@@ -242,14 +275,16 @@ Approximated as `ctx_max - 33000`. Override with `STATUSLINE_COMPACT_OVERHEAD` e
 | `STATUSLINE_PACE_HORIZON_TS` | unset | Absolute-epoch override of the computed horizon (advanced / tests). Takes precedence over `STATUSLINE_PACE_WORK`. |
 | `STATUSLINE_JSON_PATH` | `~/.claude.json` | Credential file the auth/plan letter reads (tests point it at fixtures). |
 | `STATUSLINE_MODEL_BAR_WIDTH` | 8 | Cells in each per-model weekly usage bar. |
-| `STATUSLINE_MODEL_USAGE_TTL` | 300 | Seconds since the last fetch attempt before a render spawns the refresher again. |
+| `STATUSLINE_MODEL_USAGE_TTL` | 900 | Seconds since the last fetch attempt before a render spawns the refresher again. A `retry_after` deadline from the server outranks it. |
 | `STATUSLINE_MODEL_USAGE_REFRESH` | true | Set `false` (or `0`, `no`) to stop spawning the refresher. Cached buckets still render. |
 | `STATUSLINE_MODEL_USAGE_REFRESHER` | the repo's `model-usage-refresh.sh` | Refresher path (tests point it at a stub). |
-| `STATUSLINE_MODEL_USAGE_MAX_AGE` | 3600 | Seconds of cached-data age past which the per-model field is hidden rather than shown stale. |
+| `STATUSLINE_MODEL_USAGE_MAX_AGE` | 21600 | Seconds of cached-data age past which the per-model field is hidden rather than shown stale. Six hours, not one, because the endpoint's throttling window would otherwise hide the field most of the time. |
 | `STATUSLINE_MODEL_USAGE_CACHE` | `~/.claude-statusline/model-usage.json` | Per-model weekly usage cache the refresher writes and the statusline reads. |
 | `STATUSLINE_MODEL_USAGE_FIXTURE` | unset | Refresher reads this saved response body instead of calling the API (tests, debugging). |
 | `STATUSLINE_MODEL_USAGE_URL` | the oauth usage endpoint | Refresher endpoint override. |
 | `STATUSLINE_MODEL_USAGE_TIMEOUT` | 10 | Refresher curl timeout, in seconds. |
+| `STATUSLINE_MODEL_USAGE_FIXTURE_STATUS` | 200 | HTTP status to simulate alongside a fixture (tests). |
+| `STATUSLINE_MODEL_USAGE_FIXTURE_RETRY_AFTER` | 0 | `retry-after` seconds to simulate alongside a fixture (tests). |
 
 ### 7d pace meter (bidirectional gas-pedal)
 

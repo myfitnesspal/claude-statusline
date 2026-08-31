@@ -25,6 +25,9 @@ unset STATUSLINE_MODEL_USAGE_CACHE
 unset STATUSLINE_MODEL_USAGE_REFRESH
 unset STATUSLINE_MODEL_USAGE_TTL
 unset STATUSLINE_MODEL_USAGE_REFRESHER
+unset STATUSLINE_MODEL_USAGE_FIXTURE
+unset STATUSLINE_MODEL_USAGE_FIXTURE_STATUS
+unset STATUSLINE_MODEL_USAGE_FIXTURE_RETRY_AFTER
 unset ANTHROPIC_API_KEY
 PASS=0
 FAIL=0
@@ -974,6 +977,121 @@ if mu_spawned; then
 else PASS=$((PASS + 1)); fi
 
 rm -rf "$MU_S_DIR"
+
+echo ""
+echo "=== Per-model usage: the endpoint's retry-after is binding ==="
+
+# The usage endpoint rate-limits per account on an hours-scale window and Claude
+# Code's own /usage polling shares that budget, so a 429 with a retry-after of
+# roughly an hour is a normal outcome. The refresher records when the server said
+# to come back, and the spawn gate refuses to call before then.
+
+MU_A_DIR="/tmp/claude-statusline-muafter-$$"
+mkdir -p "$MU_A_DIR"
+MU_A_CACHE="$MU_A_DIR/model-usage.json"
+REFRESHER="$SCRIPT_DIR/model-usage-refresh.sh"
+
+cat > "$MU_A_DIR/usage.json" <<'EOF'
+{ "five_hour": { "utilization": 18 },
+  "limits": [ { "kind": "weekly_scoped", "percent": 4, "resets_at": 1788739200,
+                "scope": { "model": { "display_name": "Fable" } } } ] }
+EOF
+echo '{"error":{"type":"rate_limit_error","message":"Rate limited. Please try again later."}}' \
+	> "$MU_A_DIR/throttled.json"
+
+# Seed a good cache, then get throttled.
+rm -f "$MU_A_CACHE"
+STATUSLINE_MODEL_USAGE_CACHE="$MU_A_CACHE" \
+	STATUSLINE_MODEL_USAGE_FIXTURE="$MU_A_DIR/usage.json" \
+	bash "$REFRESHER" >/dev/null 2>&1 || true
+STATUSLINE_MODEL_USAGE_CACHE="$MU_A_CACHE" \
+	STATUSLINE_MODEL_USAGE_FIXTURE="$MU_A_DIR/throttled.json" \
+	STATUSLINE_MODEL_USAGE_FIXTURE_STATUS=429 \
+	STATUSLINE_MODEL_USAGE_FIXTURE_RETRY_AFTER=3387 \
+	bash "$REFRESHER" >/dev/null 2>&1 || true
+
+mu_a_retry=$(jq -r '.retry_after // 0' "$MU_A_CACHE" 2>/dev/null || echo 0)
+mu_a_expected=$(( $(date +%s) + 3387 ))
+if [ "$mu_a_retry" -gt $((mu_a_expected - 60)) ] && [ "$mu_a_retry" -lt $((mu_a_expected + 60)) ] 2>/dev/null; then
+	PASS=$((PASS + 1))
+else
+	FAIL=$((FAIL + 1))
+	echo "FAIL: a 429 records retry_after as an absolute epoch"
+	echo "  expected near $mu_a_expected, got $mu_a_retry"
+fi
+mu_a_out=$(cat "$MU_A_CACHE" 2>/dev/null || echo "NO CACHE")
+assert_contains "a 429 keeps the previous buckets" "$mu_a_out" '"name":"Fable"'
+
+# A later success clears the deadline, so one throttled hour does not park the
+# refresher forever.
+STATUSLINE_MODEL_USAGE_CACHE="$MU_A_CACHE" \
+	STATUSLINE_MODEL_USAGE_FIXTURE="$MU_A_DIR/usage.json" \
+	bash "$REFRESHER" >/dev/null 2>&1 || true
+mu_a_retry=$(jq -r '.retry_after // 0' "$MU_A_CACHE" 2>/dev/null || echo 0)
+if [ "$mu_a_retry" -eq 0 ] 2>/dev/null; then PASS=$((PASS + 1)); else
+	FAIL=$((FAIL + 1)); echo "FAIL: a success clears retry_after (got $mu_a_retry)"; fi
+
+# A non-200 never reaches the parse, even when its body would parse cleanly. The
+# fixture here is a VALID usage body naming a different bucket, so a status check
+# that does not fire is visible: the cache would flip from Fable to Mythos.
+cat > "$MU_A_DIR/wrong-bucket.json" <<'EOF'
+{ "five_hour": { "utilization": 18 },
+  "limits": [ { "kind": "weekly_scoped", "percent": 90, "resets_at": 1788739200,
+                "scope": { "model": { "display_name": "Mythos" } } } ] }
+EOF
+STATUSLINE_MODEL_USAGE_CACHE="$MU_A_CACHE" \
+	STATUSLINE_MODEL_USAGE_FIXTURE="$MU_A_DIR/wrong-bucket.json" \
+	STATUSLINE_MODEL_USAGE_FIXTURE_STATUS=500 \
+	bash "$REFRESHER" >/dev/null 2>&1 || true
+mu_a_out=$(cat "$MU_A_CACHE" 2>/dev/null || echo "NO CACHE")
+assert_contains "a 500 keeps the previous buckets" "$mu_a_out" '"name":"Fable"'
+assert_not_contains "a 500 body is never parsed into the cache" "$mu_a_out" 'Mythos'
+
+# The spawn gate honors the deadline: past the TTL but inside retry_after, no call.
+MU_A_SENTINEL="$MU_A_DIR/spawned"
+cat > "$MU_A_DIR/stub.sh" <<'EOF'
+#!/usr/bin/env bash
+date +%s >> "$MU_SPAWN_SENTINEL"
+EOF
+chmod +x "$MU_A_DIR/stub.sh"
+
+mu_a_spawned() {
+	local i=0
+	while [ "$i" -lt 40 ]; do
+		[ -s "$MU_A_SENTINEL" ] && return 0
+		sleep 0.05
+		i=$((i + 1))
+	done
+	return 1
+}
+
+run_after() {
+	limits_json | env MU_SPAWN_SENTINEL="$MU_A_SENTINEL" \
+		STATUSLINE_MODEL_USAGE_CACHE="$MU_A_CACHE" \
+		STATUSLINE_MODEL_USAGE_REFRESHER="$MU_A_DIR/stub.sh" \
+		"$@" bash "$STATUSLINE" | strip_ansi
+}
+
+reset_state
+rm -f "$MU_A_SENTINEL"
+printf '{"ts":%s,"checked_at":%s,"retry_after":%s,"models":[{"name":"Fable","pct":4,"resets_at":1788739200}]}\n' \
+	"$(( $(date +%s) - 60 ))" "$(( $(date +%s) - 6000 ))" "$(( $(date +%s) + 1800 ))" > "$MU_A_CACHE"
+out=$(run_after STATUSLINE_MODEL_USAGE_TTL=900)
+if mu_a_spawned; then
+	FAIL=$((FAIL + 1)); echo "FAIL: an unexpired retry_after must block the spawn"
+else PASS=$((PASS + 1)); fi
+assert_contains "a blocked spawn still renders the cache" "$out" "F 4%"
+
+# Once the deadline has passed, the TTL governs again.
+reset_state
+rm -f "$MU_A_SENTINEL"
+printf '{"ts":%s,"checked_at":%s,"retry_after":%s,"models":[{"name":"Fable","pct":4,"resets_at":1788739200}]}\n' \
+	"$(( $(date +%s) - 60 ))" "$(( $(date +%s) - 6000 ))" "$(( $(date +%s) - 10 ))" > "$MU_A_CACHE"
+out=$(run_after STATUSLINE_MODEL_USAGE_TTL=900)
+if mu_a_spawned; then PASS=$((PASS + 1)); else
+	FAIL=$((FAIL + 1)); echo "FAIL: an expired retry_after lets the TTL govern again"; fi
+
+rm -rf "$MU_A_DIR"
 
 echo ""
 echo "=== Results ==="
