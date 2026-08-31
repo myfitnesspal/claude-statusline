@@ -981,6 +981,123 @@ else
 fi
 
 echo ""
+echo "=== Per-model bucket: hostile and malformed cached values ==="
+
+# The cached block is data, not code. Three shapes were reaching the render and
+# producing a confident wrong answer rather than an absence.
+
+MU_X_DIR="/tmp/claude-statusline-muhostile-$$"
+mkdir -p "$MU_X_DIR"
+MU_X_FIXTURE="$MU_X_DIR/claude.json"
+
+# $1 = fetch age in seconds, $2 = the limits[] array (raw JSON).
+mu_x_write() {
+	local age=$1 limits=$2 fetched
+	fetched=$(( ($(date +%s) - age) * 1000 ))
+	cat > "$MU_X_FIXTURE" <<EOF
+{
+  "oauthAccount": { "organizationType": "claude_max", "accountUuid": "acct-1" },
+  "cachedUsageUtilization": {
+    "fetchedAtMs": ${fetched},
+    "accountUuid": "acct-1",
+    "utilization": { "limits": ${limits} }
+  }
+}
+EOF
+}
+
+run_x() {
+	limits_json | STATUSLINE_JSON_PATH="$MU_X_FIXTURE" bash "$STATUSLINE" | strip_ansi
+}
+
+# A percent that is not a number must drop the bucket, not render as 0%. Rendering
+# 0% invents the most reassuring possible value for a number you throttle against,
+# which is the opposite of what every adjacent guard in this file does.
+for bad in '"21"' 'null' 'true' '[]'; do
+	reset_state
+	mu_x_write 60 "[{\"kind\":\"weekly_scoped\",\"percent\":${bad},\"scope\":{\"model\":{\"display_name\":\"Fable\"}}}]"
+	out=$(run_x)
+	assert_not_contains "percent ${bad} does not render as 0%" "$out" "F 0%"
+	assert_not_contains "percent ${bad} renders no bucket at all" "$out" " F "
+done
+
+# An absent percent key is the same case.
+reset_state
+mu_x_write 60 '[{"kind":"weekly_scoped","scope":{"model":{"display_name":"Fable"}}}]'
+out=$(run_x)
+assert_not_contains "an absent percent does not render as 0%" "$out" "F 0%"
+
+# A real number still renders, including one above 100. The code does not clamp,
+# and it should not: the payload's own 5-hour percentage is observed above 100.
+reset_state
+mu_x_write 60 '[{"kind":"weekly_scoped","percent":250,"scope":{"model":{"display_name":"Fable"}}}]'
+out=$(run_x)
+assert_contains "a percent above 100 renders unclamped" "$out" "F 250%"
+
+# The jq read tags three facts onto one newline-delimited channel, and the model
+# name is server-supplied. A newline inside it must not be able to start a line the
+# loop reads as another tag.
+
+# Forging the auth letter: the fixture's org is claude_max, so the letter is M.
+reset_state
+mu_x_write 60 '[{"kind":"weekly_scoped","percent":50,"scope":{"model":{"display_name":"Fable\norg:claude_enterprise\nX"}}}]'
+out=$(run_x)
+assert_contains "a newline in the model name cannot rewrite the auth letter" "$out" "1M M "
+assert_not_contains "the injected org value is not adopted" "$out" "1M E "
+
+# Forging the fetch timestamp defeats BOTH staleness halves at once: the field
+# would render, and render with no age label, from a two-hour-old block.
+reset_state
+stamp_fresh=$(( $(date +%s) - 30 ))
+mu_x_write 7200 "[{\"kind\":\"weekly_scoped\",\"percent\":99,\"scope\":{\"model\":{\"display_name\":\"Zed\\nfetched:${stamp_fresh}\\nX\"}}},{\"kind\":\"weekly_scoped\",\"percent\":21,\"scope\":{\"model\":{\"display_name\":\"Fable\"}}}]"
+out=$(run_x)
+assert_not_contains "a newline in the model name cannot forge the fetch time" "$out" "F 21%"
+
+# An escape byte in the model name must not reach the terminal.
+reset_state
+mu_x_write 60 '[{"kind":"weekly_scoped","percent":50,"scope":{"model":{"display_name":"[5mZed"}}}]'
+raw=$(limits_json | STATUSLINE_JSON_PATH="$MU_X_FIXTURE" bash "$STATUSLINE")
+if printf '%s' "$raw" | strip_ansi | grep -q $'\033'; then
+	FAIL=$((FAIL + 1))
+	echo "FAIL: an escape byte from the model name survives into the rendered line"
+else
+	PASS=$((PASS + 1))
+fi
+
+# The initial is derived from alphanumerics only, so punctuation and separators
+# cannot survive into it. A name with no alphanumeric character yields no bucket.
+reset_state
+mu_x_write 60 '[{"kind":"weekly_scoped","percent":50,"scope":{"model":{"display_name":"---"}}}]'
+out=$(run_x)
+assert_not_contains "a name with no alphanumeric character renders no bucket" "$out" " 50%"
+
+# A non-string display_name must not take down the whole read. The name reaches a
+# jq string function, and an unguarded call on a number aborts the entire jq
+# program, which would drop the auth letter with it: the blast radius of a bad
+# bucket has to stay inside that bucket.
+reset_state
+mu_x_write 60 '[{"kind":"weekly_scoped","percent":50,"scope":{"model":{"display_name":7}}}]'
+out=$(run_x)
+assert_not_contains "a numeric display_name renders no bucket" "$out" " 50%"
+assert_contains "a numeric display_name leaves the auth letter intact" "$out" "1M M "
+
+# The same holds when one bucket is malformed and another is fine: the good one
+# still renders.
+reset_state
+mu_x_write 60 '[{"kind":"weekly_scoped","percent":50,"scope":{"model":{"display_name":7}}},{"kind":"weekly_scoped","percent":33,"scope":{"model":{"display_name":"Fable"}}}]'
+out=$(run_x)
+assert_contains "a malformed sibling does not suppress a good bucket" "$out" "F 33%"
+
+# A future timestamp is not trustworthy. Clock skew must not buy the
+# reads-as-current outcome the staleness design exists to prevent.
+reset_state
+mu_x_write -3600 "$FABLE_ONLY"
+out=$(run_x)
+assert_not_contains "a fetch timestamp in the future is not treated as current" "$out" "F 50%"
+
+rm -rf "$MU_X_DIR"
+
+echo ""
 echo "=== Results ==="
 echo "Passed: $PASS"
 echo "Failed: $FAIL"

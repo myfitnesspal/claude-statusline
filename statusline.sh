@@ -265,6 +265,21 @@ fmt_limit() {
 # The cached usage block records which account it describes. After an account
 # switch it describes someone else's usage, so a uuid mismatch drops it rather
 # than rendering another account's numbers.
+#
+# THE MODEL NAME IS SERVER-SUPPLIED DATA ON A LINE-TAGGED CHANNEL. Three different
+# facts ride this one newline-delimited stream, so a newline inside a name would
+# start a line the loop below reads as another tag: a name of
+# "Fable\norg:claude_enterprise" rewrote the auth letter, and one carrying
+# "\nfetched:<recent>" forged the cache timestamp and defeated both staleness
+# guards at once. jq therefore reduces the name to a single uppercase alphanumeric
+# initial before it ever reaches the channel. That is all the renderer uses, and
+# no newline, tab, colon or escape byte can survive it, which removes the class
+# rather than patching the instance.
+#
+# The percentage is emitted as a non-numeric sentinel when it is not a number, so
+# the loop's existing numeric guard drops the bucket. Defaulting it to 0 instead
+# would print "F 0%", inventing the most reassuring possible value for a number
+# you throttle against.
 claude_json="${STATUSLINE_JSON_PATH:-$HOME/.claude.json}"
 cj_org="" cj_fetched=0 cj_buckets=""
 if [ -f "$claude_json" ]; then
@@ -282,9 +297,11 @@ if [ -f "$claude_json" ]; then
 		(if $mine then
 			$u.utilization.limits[]?
 			| select(.kind == "weekly_scoped")
-			| select(.scope.model.display_name != null)
-			| "bucket:" + .scope.model.display_name + "\t"
-				+ ((.percent // 0) | if type == "number" then floor else 0 end | tostring)
+			| select((.scope.model.display_name | type) == "string")
+			| "bucket:"
+				+ ((.scope.model.display_name | gsub("[^A-Za-z0-9]"; "") | ascii_upcase)[0:1])
+				+ "\t"
+				+ (if (.percent | type) == "number" then (.percent | floor | tostring) else "x" end)
 		 else empty end)
 	' "$claude_json" 2>/dev/null)
 fi
@@ -510,16 +527,23 @@ fmt_model_usage() {
 	[ -n "$cj_buckets" ] || return
 	case "$cj_fetched" in ''|*[!0-9]*) return ;; esac
 	[ "$cj_fetched" -le 0 ] && return
-	local age=$((now - cj_fetched)) name pct color initial age_label=""
+	local age=$((now - cj_fetched)) initial pct color age_label=""
+	# A stamp in the future is not trustworthy. Without this, clock skew makes both
+	# comparisons below false and buys the reads-as-current outcome the two
+	# thresholds exist to prevent.
+	[ "$age" -lt 0 ] && return
 	[ "$age" -gt "$STATUSLINE_MODEL_USAGE_MAX_AGE" ] && return
 	[ "$age" -gt "$MODEL_USAGE_WRITE_THROTTLE" ] && age_label=" $(fmt_duration "$age")"
-	while IFS=$'\t' read -r name pct; do
-		[ -z "$name" ] && continue
+	# The first field is already a single uppercase alphanumeric character, produced
+	# by jq above; the second is a floored integer or the "x" sentinel. Both guards
+	# below are what turn a malformed value into an absent field rather than a
+	# confident wrong one.
+	while IFS=$'\t' read -r initial pct; do
+		[ -z "$initial" ] && continue
 		case "$pct" in ''|*[!0-9]*) continue ;; esac
 		color="$NORMAL"
 		[ "$pct" -ge 50 ] && color="$YELLOW"
 		[ "$pct" -ge 80 ] && color="$RED"
-		initial=$(printf '%s' "${name:0:1}" | tr 'a-z' 'A-Z')
 		printf ' · %b%s %s%%%b%s' "$color" "$initial" "$pct" "$NORMAL" "$age_label"
 	done <<< "$cj_buckets"
 }
