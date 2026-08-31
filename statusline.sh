@@ -76,9 +76,9 @@ STATUSLINE_PACE_GAMMA="${STATUSLINE_PACE_GAMMA:-1.5}"
 # The statusline payload carries no per-model window, so these come from the cache
 # model-usage-refresh.sh writes out of band. See SPEC.md.
 STATUSLINE_MODEL_BAR_WIDTH="${STATUSLINE_MODEL_BAR_WIDTH:-8}"
-STATUSLINE_MODEL_USAGE_MAX_AGE="${STATUSLINE_MODEL_USAGE_MAX_AGE:-3600}"
+STATUSLINE_MODEL_USAGE_MAX_AGE="${STATUSLINE_MODEL_USAGE_MAX_AGE:-21600}"
 MODEL_USAGE_CACHE="${STATUSLINE_MODEL_USAGE_CACHE:-$HOME/.claude-statusline/model-usage.json}"
-STATUSLINE_MODEL_USAGE_TTL="${STATUSLINE_MODEL_USAGE_TTL:-300}"
+STATUSLINE_MODEL_USAGE_TTL="${STATUSLINE_MODEL_USAGE_TTL:-900}"
 
 # The refresher is a sibling file in the repo, but install.sh symlinks this script
 # into ~/.claude, so BASH_SOURCE names the link and the link's directory holds no
@@ -453,7 +453,7 @@ fmt_pace() {
 
 # Nothing else drives the refresher, so a render is what starts it: spawn when the
 # last attempt has aged past the TTL, including the first render, when there is no
-# cache at all. Detached with output discarded, because a render must never block on
+# cache at all. A retry_after deadline the server set outranks the TTL. Detached with output discarded, because a render must never block on
 # the network; the refresher's own lock keeps concurrent sessions to one fetch.
 #
 # This keys on checked_at (when we last tried), not ts (how old the numbers are).
@@ -467,11 +467,16 @@ maybe_refresh_model_usage() {
 		false|0|no) return ;;
 	esac
 	[ -x "$MODEL_USAGE_REFRESHER" ] || return
-	local checked=0
+	local checked=0 retry_after=0
 	if [ -f "$MODEL_USAGE_CACHE" ]; then
-		checked=$(jq -r '.checked_at // 0' "$MODEL_USAGE_CACHE" 2>/dev/null) || checked=0
+		IFS=$'\t' read -r checked retry_after < <(jq -r '"\(.checked_at // 0)\t\(.retry_after // 0)"' \
+			"$MODEL_USAGE_CACHE" 2>/dev/null) || { checked=0; retry_after=0; }
 		case "$checked" in ''|*[!0-9]*) checked=0 ;; esac
+		case "$retry_after" in ''|*[!0-9]*) retry_after=0 ;; esac
 	fi
+	# The server's own deadline outranks the TTL: calling before it just earns another
+	# 429, and the endpoint's window is hours long.
+	[ "$now" -lt "$retry_after" ] && return
 	[ $((now - checked)) -lt "$STATUSLINE_MODEL_USAGE_TTL" ] && return
 	( "$MODEL_USAGE_REFRESHER" >/dev/null 2>&1 & ) >/dev/null 2>&1
 }
