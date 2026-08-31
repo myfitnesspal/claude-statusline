@@ -5,6 +5,7 @@ A compact status bar for [Claude Code](https://claude.ai/code) that shows model,
 Four states, rendered by the script itself. Color is stripped here. The thresholds that
 drive it are in [Color coding](#color-coding) below.
 
+<!-- demo:start -->
 ```
 # typical session on a 200K window: healthy context, on pace so no meter
 O4.6 200k M | 34k ██░░░░░░ | 4h1m 8% · 5d12h 21% · F 4% | 19m +$0.05 $0.67
@@ -18,6 +19,7 @@ O5 1M M | 412k ████████▶ | 53m 71% · 5d18h 40% · F 21% 40m �
 # no plan rate limits (API key, Bedrock, Vertex): the whole section is absent
 S5 200k M | 18k █░░░░░░░ | 0m +$0.02 $0.04
 ```
+<!-- demo:end -->
 
 Sections are separated by `|`. Fields hide themselves when they aren't actionable, so the line stays short.
 

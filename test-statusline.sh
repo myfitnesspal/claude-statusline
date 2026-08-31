@@ -1110,6 +1110,41 @@ assert_not_contains "a fetch timestamp in the future is not treated as current" 
 rm -rf "$MU_X_DIR"
 
 echo ""
+echo "=== README demo block matches the generator ==="
+
+# The README used to carry a screenshot, which went stale invisibly: it advertised a
+# field the script had stopped emitting, and no text sweep could reach the claim
+# because it lived in pixels. The block is generated now, and this is what makes the
+# staleness mechanical rather than a thing someone has to remember.
+#
+# demo.sh's output is deterministic: every reset is a fixed offset from now, and
+# fmt_duration renders a fixed offset identically whenever it runs.
+
+demo_generated=$(bash "$SCRIPT_DIR/demo.sh" 2>/dev/null)
+demo_readme=$(sed -n '/<!-- demo:start -->/,/<!-- demo:end -->/p' "$SCRIPT_DIR/README.md" \
+	| sed '1d;$d' | sed '1d;$d')
+
+if [ -z "$demo_readme" ]; then
+	FAIL=$((FAIL + 1))
+	echo "FAIL: no demo block found between the markers in README.md"
+elif [ "$demo_generated" = "$demo_readme" ]; then
+	PASS=$((PASS + 1))
+else
+	FAIL=$((FAIL + 1))
+	echo "FAIL: README.md's demo block is stale — run: bash demo.sh --update"
+	diff <(printf '%s\n' "$demo_readme") <(printf '%s\n' "$demo_generated") | head -12
+fi
+
+# The generator must not touch the real usage history: it renders many statuslines,
+# and each render appends a snapshot under $HOME.
+if printf '%s' "$demo_generated" | grep -q 'O4.6 200k'; then
+	PASS=$((PASS + 1))
+else
+	FAIL=$((FAIL + 1))
+	echo "FAIL: demo.sh produced no recognisable statusline output"
+fi
+
+echo ""
 echo "=== Results ==="
 echo "Passed: $PASS"
 echo "Failed: $FAIL"
