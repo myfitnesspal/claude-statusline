@@ -5,6 +5,7 @@ Custom statusline for Claude Code, displayed via the `StatuslineUpdate` hook.
 ## Key files
 - `statusline.sh` — main statusline script, receives JSON on stdin, outputs one line
 - `round-reset.sh` — called by `UserPromptSubmit` hook, marks round boundaries
+- `model-usage-refresh.sh` — out-of-band fetch of per-model weekly usage (the Fable bucket) into a cache the statusline reads
 - `install.sh` — installs hooks into Claude Code settings
 - `test-statusline.sh` — tests feeding mock JSON and checking output
 - `SPEC.md` — full specification with layout, design decisions, color thresholds, and available JSON fields
@@ -26,6 +27,18 @@ strings $(which claude) | grep 'autocompact:.*threshold'
 strings $(which claude) | grep -oE '.{0,200}IeH.{0,200}'
 ```
 The minified function names (IeH, yU, PYH) will change between versions. Look for the pattern: `tokens=${...} threshold=${...} effectiveWindow=${...}`.
+
+### Per-model weekly usage is not in the payload
+The payload's `rate_limits` carries only `five_hour`, `seven_day`, and `spend_limit`
+(gateway sessions). The per-model weekly buckets `/usage` shows (`Current week (Fable)`)
+come from `GET https://api.anthropic.com/api/oauth/usage`, fetched out of band by
+`model-usage-refresh.sh`. SPEC.md has the cache format and failure behavior.
+
+To re-derive, scan the binary (`/bin/ls -t ~/.local/share/claude/versions/* | head -1`)
+for two needles: `exceeds_200k_tokens:` sits at the end of the statusline payload
+builder, whose `rate_limits` literal shows which keys it actually spreads, and
+`weekly_scoped` sits in the `limits[]` filter that produces the per-model rows.
+Minified lines are long, so read a byte window around each rather than using `strings`.
 
 ### JSON payload
 The statusline hook does NOT receive the `/context` category breakdown (system prompt, tools, messages, etc.). Only aggregate token counts are available. Dump the payload with:

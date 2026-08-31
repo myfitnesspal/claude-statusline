@@ -629,6 +629,121 @@ raw=$(STATUSLINE_JSON_PATH="$AUTH_JSON_DIR/enterprise.json" run_raw 100 500 1000
 assert_contains "auth letter uncolored" "$raw" "200k E "
 
 echo ""
+echo "=== Per-model weekly usage refresher (model-usage-refresh.sh) ==="
+
+# The StatuslineUpdate payload carries only five_hour/seven_day, so the per-model
+# weekly buckets (/usage's "Current week (Fable)") come from a separate fetch of
+# GET /api/oauth/usage. model-usage-refresh.sh does that fetch out-of-band and
+# writes a small cache the statusline reads. STATUSLINE_MODEL_USAGE_FIXTURE
+# replaces the network call with a saved response body (tests, debugging).
+
+REFRESHER="$SCRIPT_DIR/model-usage-refresh.sh"
+MU_DIR="/tmp/claude-statusline-mutest-$$"
+mkdir -p "$MU_DIR"
+MU_CACHE="$MU_DIR/model-usage.json"
+
+# A response shaped like the real one. Each of the two filters gets its own
+# discriminating entry: the Mythos row is model-scoped but NOT weekly, so only the
+# kind check drops it, and the scopeless row is weekly but NOT model-scoped, so
+# only the scope check drops it. Without both, one filter covers for the other and
+# the test passes with the filter deleted.
+cat > "$MU_DIR/usage.json" <<'EOF'
+{
+  "five_hour": { "utilization": 18, "resets_at": 1788000000 },
+  "seven_day": { "utilization": 3, "resets_at": 1788739200 },
+  "limits": [
+    { "kind": "five_hour", "percent": 18, "resets_at": 1788000000 },
+    { "kind": "five_hour_scoped", "percent": 77, "resets_at": 1788000000,
+      "scope": { "model": { "display_name": "Mythos" } } },
+    { "kind": "weekly_scoped", "percent": 4.7, "resets_at": 1788739200,
+      "scope": { "model": { "display_name": "Fable" } } },
+    { "kind": "weekly_scoped", "percent": 9, "resets_at": 1788739200, "scope": {} }
+  ]
+}
+EOF
+
+rm -f "$MU_CACHE"
+mu_rc=0
+STATUSLINE_MODEL_USAGE_CACHE="$MU_CACHE" \
+	STATUSLINE_MODEL_USAGE_FIXTURE="$MU_DIR/usage.json" \
+	bash "$REFRESHER" >/dev/null 2>&1 || mu_rc=$?
+if [ "$mu_rc" -eq 0 ]; then PASS=$((PASS + 1)); else
+	FAIL=$((FAIL + 1)); echo "FAIL: refresher exits 0 on a good response (got $mu_rc)"; fi
+mu_out=$(cat "$MU_CACHE" 2>/dev/null || echo "NO CACHE")
+assert_contains "refresher extracts the Fable bucket name" "$mu_out" '"name":"Fable"'
+assert_contains "refresher floors the percentage the way /usage does" "$mu_out" '"pct":4'
+assert_not_contains "refresher does not emit a fractional percentage" "$mu_out" '"pct":4.7'
+assert_contains "refresher keeps the bucket reset time" "$mu_out" '"resets_at":1788739200'
+assert_not_contains "refresher drops a model-scoped entry that is not weekly" "$mu_out" 'Mythos'
+assert_not_contains "refresher drops a non-weekly entry's percentage" "$mu_out" '"pct":77'
+assert_not_contains "refresher drops weekly entries with no model scope" "$mu_out" '"pct":9'
+
+# ts (data age) and checked_at (last attempt) are separate: the statusline hides a
+# stale field on ts and backs off respawning on checked_at.
+mu_ts=$(jq -r '.ts // 0' "$MU_CACHE" 2>/dev/null || echo 0)
+mu_checked=$(jq -r '.checked_at // 0' "$MU_CACHE" 2>/dev/null || echo 0)
+if [ "$mu_ts" = "$mu_checked" ] && [ "$mu_ts" -gt 1700000000 ] 2>/dev/null; then
+	PASS=$((PASS + 1))
+else
+	FAIL=$((FAIL + 1))
+	echo "FAIL: successful refresh stamps ts == checked_at"
+	echo "  got ts=$mu_ts checked_at=$mu_checked"
+fi
+
+# A failed fetch must not blank a good cache: the models survive, only checked_at
+# moves, so the display degrades by age rather than vanishing on one bad call.
+python3 - "$MU_CACHE" <<'PYEOF' 2>/dev/null || true
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d["ts"] = d["checked_at"] = 1788000000
+json.dump(d, open(p, "w"))
+PYEOF
+STATUSLINE_MODEL_USAGE_CACHE="$MU_CACHE" \
+	STATUSLINE_MODEL_USAGE_FIXTURE="$MU_DIR/does-not-exist.json" \
+	bash "$REFRESHER" >/dev/null 2>&1 || true
+mu_out=$(cat "$MU_CACHE" 2>/dev/null || echo "NO CACHE")
+assert_contains "failed refresh keeps the previous buckets" "$mu_out" '"name":"Fable"'
+assert_contains "failed refresh keeps the previous data age" "$mu_out" '"ts":1788000000'
+mu_checked=$(jq -r '.checked_at // 0' "$MU_CACHE" 2>/dev/null || echo 0)
+if [ "$mu_checked" -gt 1788000000 ] 2>/dev/null; then
+	PASS=$((PASS + 1))
+else
+	FAIL=$((FAIL + 1))
+	echo "FAIL: failed refresh advances checked_at (backoff) without touching ts"
+	echo "  got checked_at=$mu_checked"
+fi
+
+# An error body (what an expired token returns) is not a usage body: it must leave
+# the previous buckets intact rather than parsing to an empty bucket list.
+python3 - "$MU_CACHE" <<'SEEDEOF' 2>/dev/null || true
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d["ts"] = d["checked_at"] = 1788000000
+d["models"] = [{"name": "Fable", "pct": 4, "resets_at": 1788739200}]
+json.dump(d, open(p, "w"))
+SEEDEOF
+echo '{"error":{"type":"authentication_error","message":"invalid bearer token"}}' > "$MU_DIR/error.json"
+STATUSLINE_MODEL_USAGE_CACHE="$MU_CACHE" \
+	STATUSLINE_MODEL_USAGE_FIXTURE="$MU_DIR/error.json" \
+	bash "$REFRESHER" >/dev/null 2>&1 || true
+mu_out=$(cat "$MU_CACHE" 2>/dev/null || echo "NO CACHE")
+assert_contains "error body keeps the previous buckets" "$mu_out" '"name":"Fable"'
+assert_not_contains "error body does not blank the bucket list" "$mu_out" '"models":[]'
+
+# A response carrying no model buckets writes an empty list rather than failing.
+echo '{"five_hour":{"utilization":18},"limits":[]}' > "$MU_DIR/empty.json"
+rm -f "$MU_CACHE"
+STATUSLINE_MODEL_USAGE_CACHE="$MU_CACHE" \
+	STATUSLINE_MODEL_USAGE_FIXTURE="$MU_DIR/empty.json" \
+	bash "$REFRESHER" >/dev/null 2>&1 || true
+mu_out=$(cat "$MU_CACHE" 2>/dev/null || echo "NO CACHE")
+assert_contains "no buckets writes an empty list" "$mu_out" '"models":[]'
+
+rm -rf "$MU_DIR"
+
+echo ""
 echo "=== Results ==="
 echo "Passed: $PASS"
 echo "Failed: $FAIL"
