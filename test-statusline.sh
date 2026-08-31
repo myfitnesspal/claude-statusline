@@ -19,7 +19,6 @@ unset STATUSLINE_PACE_WORK
 unset STATUSLINE_PACE_HORIZON_TS
 unset STATUSLINE_PACE_SHOW_ON_PACE
 unset STATUSLINE_PACE_SHOW_COLD
-unset STATUSLINE_MODEL_BAR_WIDTH
 unset STATUSLINE_MODEL_USAGE_MAX_AGE
 unset ANTHROPIC_API_KEY
 PASS=0
@@ -648,6 +647,9 @@ echo "=== Per-model weekly usage bar (the Fable bucket) ==="
 # cachedUsageUtilization, refreshed by its own polling. The per-model weekly
 # buckets (/usage's "Current week (Fable)") come from there, read in the same pass
 # that reads the auth letter. STATUSLINE_JSON_PATH points that file at a fixture.
+#
+# The field is a number with no bar of its own, and it sits between the 7d
+# percentage and the 7d pace meter, so the meter stays at the section's right edge.
 
 MU_J_DIR="/tmp/claude-statusline-mujson-$$"
 mkdir -p "$MU_J_DIR"
@@ -692,9 +694,11 @@ FABLE_ONLY='[{"kind":"weekly_scoped","group":"weekly","percent":50,"resets_at":"
 # The bucket renders as initial, percentage, bar. 50% of 10 cells = 5 filled.
 reset_state
 mu_json_write 60 "$FABLE_ONLY"
-out=$(STATUSLINE_MODEL_BAR_WIDTH=10 run_limits)
-assert_contains "model bucket renders initial, percentage and bar" "$out" "F 50% █████░░░░░"
+out=$(run_limits)
+assert_contains "model bucket renders initial and percentage" "$out" "F 50%"
 assert_contains "model bucket follows the 7d limit" "$out" "12% · F 50%"
+assert_not_contains "model bucket carries no filled bar" "$out" "F 50% █"
+assert_not_contains "model bucket carries no empty bar" "$out" "F 50% ░"
 
 # The shared read must still produce the auth letter.
 assert_contains "auth letter survives the shared read" "$out" "1M M "
@@ -710,7 +714,7 @@ mu_json_write 60 '[
   {"kind":"weekly_all","group":"weekly","percent":9},
   {"kind":"weekly_scoped","group":"weekly","percent":4.7,"scope":{"model":{"display_name":"Fable"}}}
 ]'
-out=$(STATUSLINE_MODEL_BAR_WIDTH=8 run_limits)
+out=$(run_limits)
 assert_contains "floors the percentage the way /usage does" "$out" "F 4%"
 assert_not_contains "no fractional percentage is rendered" "$out" "F 4.7%"
 assert_not_contains "drops a model-scoped entry that is not weekly" "$out" "M 77%"
@@ -723,7 +727,7 @@ assert_not_contains "a weekly entry with no model scope does not render" "$out" 
 # The initial comes from the server's display name, uppercased.
 reset_state
 mu_json_write 60 '[{"kind":"weekly_scoped","percent":30,"scope":{"model":{"display_name":"mythos"}}}]'
-out=$(STATUSLINE_MODEL_BAR_WIDTH=10 run_limits)
+out=$(run_limits)
 assert_contains "initial is uppercased from the display name" "$out" "M 30%"
 
 # Every model-scoped bucket renders, in the order the file lists them.
@@ -732,28 +736,28 @@ mu_json_write 60 '[
   {"kind":"weekly_scoped","percent":50,"scope":{"model":{"display_name":"Fable"}}},
   {"kind":"weekly_scoped","percent":20,"scope":{"model":{"display_name":"Opus"}}}
 ]'
-out=$(STATUSLINE_MODEL_BAR_WIDTH=10 run_limits)
-assert_contains "buckets keep file order" "$out" "F 50% █████░░░░░ · O 20% ██░░░░░░░░"
+out=$(run_limits)
+assert_contains "buckets keep file order" "$out" "F 50% · O 20%"
 
-# Bar width honors its own knob, independent of the context and pace bars.
+# The field sits to the LEFT of the pace meter, so the meter keeps the section's
+# right edge. Pinned against a pace case the meter tests already fix: at 65% used
+# with the window half-elapsed, linear gamma and an 8-cell meter, the meter is three
+# filled cells. The Fable percentage must appear between the 7d number and that bar.
 reset_state
 mu_json_write 60 "$FABLE_ONLY"
-out=$(STATUSLINE_MODEL_BAR_WIDTH=4 run_limits)
-assert_contains "model bar width knob applies" "$out" "F 50% ██░░"
+out=$(pace_json 65 302400 \
+	| STATUSLINE_JSON_PATH="$MU_J_FIXTURE" STATUSLINE_PACE_GAMMA=1 STATUSLINE_PACE_BAR_WIDTH=8 \
+	  bash "$STATUSLINE" | strip_ansi)
+assert_contains "the bucket sits between the 7d number and the pace meter" "$out" "65% · F 50% ███░░░░░"
 
-# The fill rounds to nearest, matching the context bar: 7% of 8 cells is 0.56,
-# which rounds up to one cell rather than truncating to none.
+# With no bucket the meter still follows the 7d number directly, so the field's
+# absence leaves no gap or stray separator.
 reset_state
-mu_json_write 60 '[{"kind":"weekly_scoped","percent":7,"scope":{"model":{"display_name":"Fable"}}}]'
-out=$(STATUSLINE_MODEL_BAR_WIDTH=8 run_limits)
-assert_contains "fill rounds to nearest, not down" "$out" "F 7% █░░░░░░░"
-
-# A low percentage still shows the number even when the bar rounds to empty: the
-# number carries precision the bar cannot.
-reset_state
-mu_json_write 60 '[{"kind":"weekly_scoped","percent":4,"scope":{"model":{"display_name":"Fable"}}}]'
-out=$(STATUSLINE_MODEL_BAR_WIDTH=8 run_limits)
-assert_contains "low percentage keeps its number" "$out" "F 4% ░░░░░░░░"
+printf '{"oauthAccount":{"organizationType":"claude_max","accountUuid":"acct-1"}}\n' > "$MU_J_FIXTURE"
+out=$(pace_json 65 302400 \
+	| STATUSLINE_JSON_PATH="$MU_J_FIXTURE" STATUSLINE_PACE_GAMMA=1 STATUSLINE_PACE_BAR_WIDTH=8 \
+	  bash "$STATUSLINE" | strip_ansi)
+assert_contains "no bucket leaves the meter against the 7d number" "$out" "65% ███░░░░░"
 
 # No cached usage block, no field. A fresh install has none until Claude Code polls.
 reset_state
@@ -775,17 +779,30 @@ mu_json_write 60 "$FABLE_ONLY" "other-account"
 out=$(run_limits)
 assert_not_contains "a cache block from another account is ignored" "$out" "F 50%"
 
-# Claude Code's fetch can go stale (its polling is its own business), so data past
-# the max age is hidden rather than shown wrong.
-reset_state
-mu_json_write 30000 "$FABLE_ONLY"
-out=$(STATUSLINE_MODEL_USAGE_MAX_AGE=21600 run_limits)
-assert_not_contains "stale data is hidden" "$out" "F 50%"
-
+# Age does not hide the bucket. There is deliberately no staleness cutoff: hiding a
+# stale field rendered identically to having no bucket at all, so it swapped a
+# slightly-old number for a blank the reader could not interpret. Every other field
+# shows what it has, and this one does too.
 reset_state
 mu_json_write 1800 "$FABLE_ONLY"
-out=$(STATUSLINE_MODEL_USAGE_MAX_AGE=21600 run_limits)
-assert_contains "data within the max age is shown" "$out" "F 50%"
+out=$(run_limits)
+assert_contains "a recent fetch renders" "$out" "F 50%"
+
+reset_state
+mu_json_write 30000 "$FABLE_ONLY"
+out=$(run_limits)
+assert_contains "an 8-hour-old fetch still renders" "$out" "F 50%"
+
+reset_state
+mu_json_write 604800 "$FABLE_ONLY"
+out=$(run_limits)
+assert_contains "a week-old fetch still renders" "$out" "F 50%"
+
+# No staleness knob is consulted, so setting one changes nothing.
+reset_state
+mu_json_write 30000 "$FABLE_ONLY"
+out=$(STATUSLINE_MODEL_USAGE_MAX_AGE=60 run_limits)
+assert_contains "no staleness cutoff is honored" "$out" "F 50%"
 
 # The color ladder matches the neighbouring limits: gray under 50, yellow 50-79,
 # red at 80 and over.
