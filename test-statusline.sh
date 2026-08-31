@@ -796,7 +796,10 @@ assert_not_contains "a cache block from another account is ignored" "$out" "F 50
 # and its own reader refuses the block past 1 hour (wen=3600000), so a block older
 # than an hour is one Claude Code itself would reject.
 
-# Fresh inside the write throttle: the number alone, no age.
+# The field is the number alone at every age it renders at. An age stamp was tried
+# and dropped: it spent a cell on a number that is almost always within a few
+# minutes of current, and the cutoff below is what keeps a genuinely stale reading
+# off the line.
 reset_state
 mu_json_write 120 "$FABLE_ONLY"
 out=$(run_limits)
@@ -808,22 +811,25 @@ mu_json_write 240 "$FABLE_ONLY"
 out=$(run_limits)
 assert_not_contains "4 minutes old is still bare" "$out" "F 50% 4m"
 
-# Past the write throttle the age rides along, so a number that is not current
-# cannot read as current.
+# Past the write throttle the field stays bare. This is the boundary the age stamp
+# used to cross, so these three are what discriminate the removal.
 reset_state
 mu_json_write 360 "$FABLE_ONLY"
 out=$(run_limits)
-assert_contains "6 minutes old shows its age" "$out" "F 50% 6m"
+assert_contains "6 minutes old still renders" "$out" "F 50%"
+assert_not_contains "6 minutes old shows no age" "$out" "F 50% 6m"
 
 reset_state
 mu_json_write 1800 "$FABLE_ONLY"
 out=$(run_limits)
-assert_contains "30 minutes old shows its age" "$out" "F 50% 30m"
+assert_contains "30 minutes old still renders" "$out" "F 50%"
+assert_not_contains "30 minutes old shows no age" "$out" "F 50% 30m"
 
 reset_state
 mu_json_write 3000 "$FABLE_ONLY"
 out=$(run_limits)
-assert_contains "50 minutes old still renders, with its age" "$out" "F 50% 50m"
+assert_contains "50 minutes old still renders" "$out" "F 50%"
+assert_not_contains "50 minutes old shows no age" "$out" "F 50% 50m"
 
 # Past Claude Code's own 1-hour cutoff the field is gone. Showing it would mean
 # displaying a number the writer's own reader discards.

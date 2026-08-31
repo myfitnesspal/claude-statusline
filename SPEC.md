@@ -8,7 +8,7 @@
 
 Example:
 ```
-O4.6 200k | 34k ██░░░░░░ | 2h14m 11% · 3d5h 12% · F 4% 12m | 19m +$0.05 $0.67
+O4.6 200k | 34k ██░░░░░░ | 2h14m 11% · 3d5h 12% · F 4% | 19m +$0.05 $0.67
 ```
 
 ## Sections
@@ -28,14 +28,14 @@ O4.6 200k | 34k ██░░░░░░ | 2h14m 11% · 3d5h 12% · F 4% 12m | 1
 - Output tokens are NOT shown — they aren't in context yet (will fold in on next call)
 
 ### Section 3: Rate limits
-`2h14m 11% · 3d5h 12% · F 4% 12m`
+`2h14m 11% · 3d5h 12% · F 4%`
 
 - 5-hour and 7-day rate limit usage with time until reset
 - Dot separator between the two limits
 - Color-coded: gray < 50%, yellow 50-79%, red >= 80%
 - Only shown when rate limit data is available (Pro/Max subscribers)
 - The 7-day limit is followed by a **bidirectional pace meter** (see below): it flags both burning too fast (you'll wall before the window/horizon) and too slow (you'll leave weekly budget unused, which is lost at reset). Hidden when on pace by default, so it only appears when it has something to say.
-- **Per-model weekly buckets** are one field each, carrying the model's initial and its weekly percentage, plus the age of the reading once it is over five minutes old. `F 4%` is the `Current week (Fable)` row from `/usage`; `F 4% 12m` is the same row from a reading twelve minutes old. They sit after the last plan percentage present and before the pace meter, separated from the meter by a dot like every other field boundary in the section, so the meter keeps its right edge. The dot appears only when the meter actually renders: the meter hides whenever the burn is on pace, and a separator keyed to the bucket alone would trail with nothing after it. With a 7-day field that reads as `3d5h 12% · F 4%`; on a payload carrying only `five_hour` the bucket follows the 5-hour percentage instead, which the render deliberately allows because the buckets come from a different source than the payload. They are read from Claude Code's own cached usage response in `~/.claude.json` (see Per-Model Weekly Usage), and the field is absent when the account has no such bucket or the cached reading is over an hour old.
+- **Per-model weekly buckets** are one field each, carrying the model's initial and its weekly percentage and nothing else. `F 4%` is the `Current week (Fable)` row from `/usage`. They sit after the last plan percentage present and before the pace meter, separated from the meter by a dot like every other field boundary in the section, so the meter keeps its right edge. The dot appears only when the meter actually renders: the meter hides whenever the burn is on pace, and a separator keyed to the bucket alone would trail with nothing after it. With a 7-day field that reads as `3d5h 12% · F 4%`; on a payload carrying only `five_hour` the bucket follows the 5-hour percentage instead, which the render deliberately allows because the buckets come from a different source than the payload. They are read from Claude Code's own cached usage response in `~/.claude.json` (see Per-Model Weekly Usage), and the field is absent when the account has no such bucket or the cached reading is over an hour old.
 
 ### Section 4: Cost and timing
 `19m +$0.05 $0.67`
@@ -264,27 +264,30 @@ therefore load-bearing for the staleness policy rather than defensive tidying.
 ### Staleness follows Claude Code's own two constants
 
 The cache can be an hour behind, so this field needs a staleness policy that the
-other fields do not. Both of its thresholds come out of Claude Code's binary rather
-than being chosen here, because Claude Code is the writer and its own reader defines
-what the block means:
+other fields do not. The policy is one threshold, and it comes out of Claude Code's
+binary rather than being chosen here, because Claude Code is the writer and its own
+reader defines what the block means:
 
 | Constant | Value | Role |
 |----------|-------|------|
-| `Ten` | 300000 ms (5 min) | The write throttle. Claude Code persists a fresh fetch at most this often, so a block younger than this is as current as the file can be. |
 | `wen` | 3600000 ms (1 hour) | The read cutoff. Its own reader returns null past this, so an older block is one Claude Code itself discards. |
 
 Past `STATUSLINE_MODEL_USAGE_MAX_AGE` (default 3600 seconds, matching `wen`) the
 field is hidden, because showing it would mean displaying a number the writer's own
-reader rejects. Between the write throttle and that cutoff the age rides along, as in
-`F 21% 12m`.
+reader rejects. Inside the cutoff the field is the number alone.
 
-Both halves are needed, and the reason is a measured failure rather than a
-preference. A version that hid stale data and showed no age anywhere failed twice
-over. A hidden stale field and an account with no bucket render identically, so a
-reader cannot tell a lagging cache from a normal empty state. And a version with no
-cutoff at all displayed 4% while the real bucket sat at 21%, because the block was 85
-minutes old. The age is what makes the difference visible; the cutoff is what stops
-the number being wrong. Neither alone was enough.
+A cutoff is required, and that part is a measured failure rather than a preference. A
+version with no cutoff displayed 4% while the real bucket sat at 21%, because the
+block was 85 minutes old.
+
+An age stamp was tried alongside it, rendering `F 21% 12m` between the 5-minute write
+throttle and the cutoff. It was dropped. The same `/usage` run that refreshes the
+cache is the one a reader has just made, so in practice the age was within a few
+minutes of current almost every time it appeared, and it spent a cell of a
+deliberately short line saying so. The cost of dropping it is real and bounded: a
+reading up to an hour old now renders identically to a fresh one, and the cutoff is
+the only thing standing between the reader and a stale number. That trade was made
+deliberately, in favour of the shorter line.
 
 ### What refreshes the block, and what that makes this field
 
@@ -292,8 +295,8 @@ Nothing refreshes it in the background. The write happens on one path only, when
 usage fetch succeeds, and that path has exactly two entry points: the `/usage`
 command and an SDK `get_usage` request. There is no poller.
 
-So the field carries the reading from your last `/usage` run, stamped with its age,
-and disappears an hour later. Running `/usage` is what brings it back.
+So the field carries the reading from your last `/usage` run and disappears an hour
+later. Running `/usage` is what brings it back.
 
 That bounds what this field can be, and no local source does better:
 

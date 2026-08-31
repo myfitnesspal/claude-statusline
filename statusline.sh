@@ -79,16 +79,11 @@ STATUSLINE_PACE_GAMMA="${STATUSLINE_PACE_GAMMA:-1.5}"
 # which happens on /usage and on an SDK get_usage request. There is no background
 # poll. See SPEC.md.
 #
-# Both age thresholds are Claude Code's own, read out of its binary rather than
-# chosen here, because it is the writer and its reader defines what the block means:
-#   MODEL_USAGE_WRITE_THROTTLE (Ten=300000)  it persists a fresh fetch at most this
-#                                            often, so anything younger is as current
-#                                            as the file can be, and needs no age
-#   STATUSLINE_MODEL_USAGE_MAX_AGE (wen=3600000)  its own reader returns null past
-#                                            this, so a block older than an hour is
-#                                            one Claude Code itself discards
+# The cutoff is Claude Code's own, read out of its binary rather than chosen here,
+# because it is the writer and its reader defines what the block means. Past wen
+# (3600000) its own reader returns null, so a block older than an hour is one
+# Claude Code itself discards, and this field hides rather than showing it.
 STATUSLINE_MODEL_USAGE_MAX_AGE="${STATUSLINE_MODEL_USAGE_MAX_AGE:-3600}"
-MODEL_USAGE_WRITE_THROTTLE=300
 
 # Build a bar string: `filled` solid cells (█) out of `width`, the rest empty (░).
 bar_of() {
@@ -515,25 +510,24 @@ fmt_pace() {
 # Code's own wen: its reader discards the block there, so showing it would mean
 # displaying a number the writer itself rejects.
 #
-# Between the write throttle and that cutoff the age rides along, as in "F 21% 12m".
-# An earlier version hid stale data with no age shown anywhere, and that failed for a
-# reason worth recording: a hidden stale field and an account with no bucket render
-# identically, so the reader could not tell a lagging cache from a normal empty
-# state, and a number quietly an hour behind read as current. The age is what makes
-# the difference visible, which is why hiding alone was not enough.
+# Inside that cutoff the field is the number alone. An age stamp rode along for a
+# while, as "F 21% 12m", and was dropped: the cache is refreshed by the same /usage
+# run the reader just made, so the age was within a few minutes of current almost
+# every time it appeared, and it spent a cell saying so. The cutoff is what keeps a
+# genuinely stale number off the line, and it does that whether or not an age is
+# printed beside it.
 fmt_model_usage() {
 	# An early-out, not the guard: with no buckets the loop below reads one empty line
 	# and skips it on the empty-name check, so removing this line changes nothing.
 	[ -n "$cj_buckets" ] || return
 	case "$cj_fetched" in ''|*[!0-9]*) return ;; esac
 	[ "$cj_fetched" -le 0 ] && return
-	local age=$((now - cj_fetched)) initial pct color age_label=""
+	local age=$((now - cj_fetched)) initial pct color
 	# A stamp in the future is not trustworthy. Without this, clock skew makes both
 	# comparisons below false and buys the reads-as-current outcome the two
 	# thresholds exist to prevent.
 	[ "$age" -lt 0 ] && return
 	[ "$age" -gt "$STATUSLINE_MODEL_USAGE_MAX_AGE" ] && return
-	[ "$age" -gt "$MODEL_USAGE_WRITE_THROTTLE" ] && age_label=" $(fmt_duration "$age")"
 	# The first field is already a single uppercase alphanumeric character, produced
 	# by jq above; the second is a floored integer or the "x" sentinel. Both guards
 	# below are what turn a malformed value into an absent field rather than a
@@ -544,7 +538,7 @@ fmt_model_usage() {
 		color="$NORMAL"
 		[ "$pct" -ge 50 ] && color="$YELLOW"
 		[ "$pct" -ge 80 ] && color="$RED"
-		printf ' · %b%s %s%%%b%s' "$color" "$initial" "$pct" "$NORMAL" "$age_label"
+		printf ' · %b%s %s%%%b' "$color" "$initial" "$pct" "$NORMAL"
 	done <<< "$cj_buckets"
 }
 
