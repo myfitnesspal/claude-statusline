@@ -100,8 +100,12 @@ emit_block() {
 	render "loaded 1M session, past the premium-pricing cliff, burning too fast" \
 		"Opus 5 (1M context)" 260000 1000000 8.40 2400000 true "$WORK/hot.json" 8.11
 
+	# aged.json is 40 minutes old, well past the 5-minute write throttle and well
+	# inside the 1-hour cutoff. It renders identically to a fresh reading, which is
+	# the point: the age is not shown, so this line is what a stale-but-accepted
+	# bucket looks like.
 	LIMITS=$(limits 71 3230 40 500000)
-	render "past the 400K retrieval line, with a Fable reading 40 minutes old" \
+	render "past the 400K retrieval line, with the bucket and the pace meter both up" \
 		"Opus 5 (1M context)" 412000 1000000 14.20 3900000 true "$WORK/aged.json" 13.95
 
 	LIMITS=""
