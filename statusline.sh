@@ -156,8 +156,17 @@ echo "6|${round_start_cost}" > "$STATE_FILE"
 # contamination-free budget fit (see fit-budget.py). cost_usd is PER-SESSION; the % are account-wide.
 usage_json=$(printf '{"five_hour_pct":%s,"five_hour_reset":"%s","seven_day_pct":%s,"seven_day_reset":"%s","cost_usd":%s,"ctx_tokens":%s,"ts":%s,"session_id":"%s"}' \
 	"${limit_5h:-null}" "${limit_5h_reset}" "${limit_7d:-null}" "${limit_7d_reset}" "${cost:-0}" "${ctx_tokens:-0}" "${now}" "${session_id}")
-printf '%s\n' "$usage_json" > "/tmp/claude-usage-${session_id}.json" 2>/dev/null
-printf '%s\n' "$usage_json" >> "$HOME/.claude-statusline/usage-history.jsonl" 2>/dev/null
+# Both writes are best-effort: a snapshot is not worth a broken status line. The
+# 2>/dev/null goes on a BRACE GROUP, not on printf — a redirection that fails
+# (missing directory, unwritable path) is reported by the shell, not by printf, so
+# suppressing printf's stderr left the shell's error on the terminal. The history
+# directory belongs to this statusline and nothing else creates it, so create it
+# here: without the mkdir, every append on a fresh machine failed and fit-budget.py
+# had nothing to read.
+USAGE_HISTORY_DIR="$HOME/.claude-statusline"
+{ mkdir -p "$USAGE_HISTORY_DIR"; } 2>/dev/null || true
+{ printf '%s\n' "$usage_json" > "/tmp/claude-usage-${session_id}.json"; } 2>/dev/null || true
+{ printf '%s\n' "$usage_json" >> "$USAGE_HISTORY_DIR/usage-history.jsonl"; } 2>/dev/null || true
 
 # Color for total context: absolute token thresholds (retrieval quality), plus the
 # long-context pricing cliff. Orange normally marks retrieval degradation (>=250K),

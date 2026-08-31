@@ -143,6 +143,26 @@ Format (v6): `6|round_start_cost`
 New-round marker: `/tmp/claude-statusline-newround-{session_id}`
 Created by `round-reset.sh` on `UserPromptSubmit` hook, consumed by statusline on next update.
 
+### Usage snapshots
+
+Every render also writes a snapshot of the authoritative rate-limit fields, so a
+Bash poll can read live 5h and 7d usage without a statusline hook of its own:
+
+- `/tmp/claude-usage-{session_id}.json`, overwritten per render, is the current
+  session's snapshot.
+- `~/.claude-statusline/usage-history.jsonl` is the append-only history, tagged with
+  `session_id`, which `fit-budget.py` reads to reconstruct account-wide cost across
+  concurrent sessions.
+
+Both writes are best-effort, since a snapshot is not worth a broken status line.
+Two details make that true rather than aspirational. The statusline creates
+`~/.claude-statusline` itself, because nothing else does, and before it did every
+append on a fresh machine failed and `fit-budget.py` had nothing to read. And the
+`2>/dev/null` sits on a brace group rather than on `printf`, because a failing
+redirection is reported by the shell, not by the command inside it, so the earlier
+placement left an error on the terminal at every render while silently losing the
+line.
+
 ## Per-Model Weekly Usage
 
 The `StatuslineUpdate` payload's `rate_limits` object is built from three sources:
