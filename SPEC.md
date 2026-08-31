@@ -8,7 +8,7 @@
 
 Example:
 ```
-O4.6 200k | 34k █████░░░ | 2h14m 11% · 3d5h 12% · F 4% ░░░░░░░░ | 19m +$0.05 $0.67
+O4.6 200k | 34k █████░░░ | 2h14m 11% · 3d5h 12% · F 4% | 19m +$0.05 $0.67
 ```
 
 ## Sections
@@ -28,14 +28,14 @@ O4.6 200k | 34k █████░░░ | 2h14m 11% · 3d5h 12% · F 4% ░░�
 - Output tokens are NOT shown — they aren't in context yet (will fold in on next call)
 
 ### Section 3: Rate limits
-`2h14m 11% · 3d5h 12% · F 4% ░░░░░░░░`
+`2h14m 11% · 3d5h 12% · F 4%`
 
 - 5-hour and 7-day rate limit usage with time until reset
 - Dot separator between the two limits
 - Color-coded: gray < 50%, yellow 50-79%, red >= 80%
 - Only shown when rate limit data is available (Pro/Max subscribers)
 - The 7-day limit is followed by a **bidirectional pace meter** (see below): it flags both burning too fast (you'll wall before the window/horizon) and too slow (you'll leave weekly budget unused, which is lost at reset). Hidden when on pace by default, so it only appears when it has something to say.
-- **Per-model weekly buckets** come last, one field each: the model's initial, its weekly percentage, and a bar scaled 0-100% of that bucket. `F 4% ░░░░░░░░` is the `Current week (Fable)` row from `/usage`. These are read from Claude Code's own cached usage response in `~/.claude.json` (see Per-Model Weekly Usage); the field is hidden when there is no bucket or the cached data is stale. Bar width is `STATUSLINE_MODEL_BAR_WIDTH` cells (default 8).
+- **Per-model weekly buckets** are one field each, carrying the model's initial and its weekly percentage. `F 4%` is the `Current week (Fable)` row from `/usage`. They sit between the 7-day percentage and its pace meter, so the meter keeps the right edge of the section. They are read from Claude Code's own cached usage response in `~/.claude.json` (see Per-Model Weekly Usage), and the field is simply absent when the account has no such bucket.
 
 ### Section 4: Cost and timing
 `19m +$0.05 $0.67`
@@ -54,12 +54,14 @@ The usage percentage is drawn as a fixed-width bar rather than a number. A numbe
 
 Overflow is marked with a `▶` arrowhead **fused** to the bar (no space), so the bar reads as continuing off-scale; the box keeps its `STATUSLINE_CTX_BAR_WIDTH` blocks and the arrowhead adds one cell. It is gated on the **red retrieval zone** (>= 400K), not merely on passing the bar ceiling: on a large window the ceiling *is* 400K so overflow is inherently red; on a small window the ceiling is the auto-compact threshold (below 400K), and passing it is a routine, self-healing state that doesn't warrant an alarm glyph — the full bar alone signals it. Reserving the marker for the red line keeps it meaning one thing: irreversible retrieval degradation. Bar cells are set by `STATUSLINE_CTX_BAR_WIDTH` (default 8); the 7d pace meter has its own `STATUSLINE_PACE_BAR_WIDTH` (default 8) so the two bars can be tuned independently or matched.
 
-### Per-model buckets show a number AND a bar
-The 5-hour and 7-day fields show a number alone, and the context field shows a number plus a bar. The per-model bucket follows the context field, for the reason given above: the bar shows headroom at a glance while the number keeps the precision a bar cannot carry at 8 cells. At 4% the bar is empty and the number is the whole signal, which is exactly when you want the number.
+### Per-model buckets are a number, with no bar
+An earlier version drew a bar beside the percentage, the way the context field does. It was dropped. The bucket reads as a plan limit and belongs with the 5-hour and 7-day fields, which are numbers alone, so a bar made it look like a different kind of thing. At the percentages these buckets actually sit at, the bar was also empty most of the time and carried no information the number did not.
+
+The field sits between the 7-day percentage and the 7-day pace meter. That leaves the three percentages reading as one run and keeps the meter, the section's only graphical element, at its right edge.
 
 No reset time is shown. The per-model window shares the 7-day window's reset, which the neighbouring field already displays, so a second copy would be the same fact twice.
 
-The color ladder matches `fmt_limit` rather than the context field, because the field is a plan limit and reads alongside the other two.
+The color ladder matches `fmt_limit`, because the field is a plan limit and reads alongside the other two.
 
 ### Per-model buckets are gated on the plan rate limits
 The field renders inside section 3 and inherits its gate. A session with no plan rate limits (API key, Bedrock, Vertex) has no plan buckets either, so hiding both together is correct rather than incidental.
@@ -202,16 +204,17 @@ The block records the `accountUuid` it describes. After an account switch it
 describes someone else's usage, so a mismatch against `oauthAccount.accountUuid`
 drops it rather than rendering the wrong numbers.
 
-### Stale data is hidden, not shown
+### There is no staleness cutoff
 
-Claude Code's polling cadence is its own business, so `fetchedAtMs` can be
-arbitrarily old. Past `STATUSLINE_MODEL_USAGE_MAX_AGE` (default 6 hours) the field
-disappears rather than showing the last known value. For a number you throttle
-against, absent is a signal you can act on and wrong is not.
+An earlier version hid the field once Claude Code's cached fetch aged past a
+threshold, on the theory that absent beats wrong for a number you throttle against.
+That theory does not survive the rendering. A hidden stale field and an account with
+no model bucket produce byte-identical output, so a reader cannot tell a failing
+cache from a normal empty state. Hiding therefore traded a slightly-old number for a
+blank nobody can interpret, which is not the trade the theory described.
 
-Six hours is tolerable for a weekly bucket, which moves a few points per day, so a
-six-hour-old reading is off by well under a point. The rule's real job stays intact,
-which is catching a cache that has not refreshed since yesterday.
+The field now shows whatever the cache holds, like every other field on the line.
+`fetchedAtMs` is no longer read at all.
 
 ### Why the statusline does not fetch this itself
 
@@ -252,8 +255,6 @@ Approximated as `ctx_max - 33000`. Override with `STATUSLINE_COMPACT_OVERHEAD` e
 | `STATUSLINE_PACE_WORK` | unset | Your weekly work schedule (`"<days> <start>-<end>"` local 24h, e.g. `"Mon-Fri 09-18"`; days a range like `Mon-Fri` or a comma list like `Mon,Wed,Fri`; hours `HH` or `HH:MM`). The 7d pace meter judges pace against your work schedule instead of the reset (see below). Unset = judge to the reset. |
 | `STATUSLINE_PACE_HORIZON_TS` | unset | Absolute-epoch override of the computed horizon (advanced / tests). Takes precedence over `STATUSLINE_PACE_WORK`. |
 | `STATUSLINE_JSON_PATH` | `~/.claude.json` | Credential file the auth/plan letter reads (tests point it at fixtures). |
-| `STATUSLINE_MODEL_BAR_WIDTH` | 8 | Cells in each per-model weekly usage bar. |
-| `STATUSLINE_MODEL_USAGE_MAX_AGE` | 21600 | Seconds of `cachedUsageUtilization.fetchedAtMs` age past which the per-model field is hidden rather than shown stale. |
 
 ### 7d pace meter (bidirectional gas-pedal)
 

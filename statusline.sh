@@ -76,8 +76,6 @@ STATUSLINE_PACE_GAMMA="${STATUSLINE_PACE_GAMMA:-1.5}"
 # The statusline payload carries no per-model window, but Claude Code caches the
 # whole usage response in ~/.claude.json as cachedUsageUtilization and refreshes it
 # with its own polling, so the buckets are already on disk. See SPEC.md.
-STATUSLINE_MODEL_BAR_WIDTH="${STATUSLINE_MODEL_BAR_WIDTH:-8}"
-STATUSLINE_MODEL_USAGE_MAX_AGE="${STATUSLINE_MODEL_USAGE_MAX_AGE:-21600}"
 
 # Build a bar string: `filled` solid cells (█) out of `width`, the rest empty (░).
 bar_of() {
@@ -255,19 +253,17 @@ fmt_limit() {
 # switch it describes someone else's usage, so a uuid mismatch drops it rather
 # than rendering another account's numbers.
 claude_json="${STATUSLINE_JSON_PATH:-$HOME/.claude.json}"
-cj_org="" cj_fetched=0 cj_buckets=""
+cj_org="" cj_buckets=""
 if [ -f "$claude_json" ]; then
 	while IFS= read -r _line; do
 		case "$_line" in
 			org:*)     cj_org=${_line#org:} ;;
-			fetched:*) cj_fetched=${_line#fetched:} ;;
 			bucket:*)  cj_buckets="${cj_buckets}${_line#bucket:}"$'\n' ;;
 		esac
 	done < <(jq -r '
 		(.cachedUsageUtilization // {}) as $u |
 		(($u.accountUuid // "") == (.oauthAccount.accountUuid // "\u0000")) as $mine |
 		(if .oauthAccount then "org:" + (.oauthAccount.organizationType // "unknown") else "org:" end),
-		("fetched:" + (if $mine then (($u.fetchedAtMs // 0) / 1000 | floor) else 0 end | tostring)),
 		(if $mine then
 			$u.utilization.limits[]?
 			| select(.kind == "weekly_scoped")
@@ -474,32 +470,32 @@ fmt_pace() {
 	fi
 }
 
-# Per-model weekly usage, appended to the rate-limits section: one field per
-# model-scoped bucket, carrying the model's initial, its weekly percentage, and a
-# bar scaled 0-100% of that bucket. The bucket shares the 7d window's reset, so no
-# reset time is repeated.
+# Per-model weekly usage: one field per model-scoped bucket, carrying the model's
+# initial and its weekly percentage. No bar and no reset time. The bucket shares the
+# 7d window's reset, which the field to its left already shows, and it renders
+# between that number and the 7d pace meter so the meter keeps the section's right
+# edge.
 #
-# Claude Code's polling cadence is its own business, so the cached fetch can be
-# arbitrarily old. Past STATUSLINE_MODEL_USAGE_MAX_AGE the field is hidden rather
-# than shown: for a number you throttle against, absent is actionable and wrong is
-# not.
+# There is deliberately NO staleness cutoff. An earlier version hid the field once
+# Claude Code's cached fetch aged out, on the theory that absent beats wrong. That
+# theory does not survive the rendering: a hidden stale field and an account with no
+# model bucket produce byte-identical output, so the reader cannot tell a failing
+# cache from a normal empty state. Hiding therefore swapped a slightly-old number
+# for an uninterpretable blank. Every other field shows what it has, and so does
+# this one.
 fmt_model_usage() {
+	# An early-out, not the guard: with no buckets the loop below reads one empty line
+	# and skips it on the empty-name check, so removing this line changes nothing.
 	[ -n "$cj_buckets" ] || return
-	case "$cj_fetched" in ''|*[!0-9]*) return ;; esac
-	[ "$cj_fetched" -le 0 ] && return
-	[ $((now - cj_fetched)) -gt "$STATUSLINE_MODEL_USAGE_MAX_AGE" ] && return
-	local name pct color filled initial
+	local name pct color initial
 	while IFS=$'\t' read -r name pct; do
 		[ -z "$name" ] && continue
 		case "$pct" in ''|*[!0-9]*) continue ;; esac
 		color="$NORMAL"
 		[ "$pct" -ge 50 ] && color="$YELLOW"
 		[ "$pct" -ge 80 ] && color="$RED"
-		filled=$(( (pct * STATUSLINE_MODEL_BAR_WIDTH + 50) / 100 ))
-		[ "$filled" -gt "$STATUSLINE_MODEL_BAR_WIDTH" ] && filled=$STATUSLINE_MODEL_BAR_WIDTH
 		initial=$(printf '%s' "${name:0:1}" | tr 'a-z' 'A-Z')
-		printf ' · %b%s %s%% %s%b' "$color" "$initial" "$pct" \
-			"$(bar_of "$filled" "$STATUSLINE_MODEL_BAR_WIDTH")" "$NORMAL"
+		printf ' · %b%s %s%%%b' "$color" "$initial" "$pct" "$NORMAL"
 	done <<< "$cj_buckets"
 }
 
@@ -527,8 +523,13 @@ cost_fmt=$(printf '%s +$%s $%.2f' "$(fmt_duration "$api_secs")" "$round_cost" "$
 limit_parts=""
 if [ -n "$limit_5h" ]; then
 	limit_parts="$(fmt_limit "$limit_5h" "$limit_5h_reset")"
-	[ -n "$limit_7d" ] && limit_parts="${limit_parts} · $(fmt_limit "$limit_7d" "$limit_7d_reset")$(fmt_pace "$limit_7d" "$limit_7d_reset")"
+	[ -n "$limit_7d" ] && limit_parts="${limit_parts} · $(fmt_limit "$limit_7d" "$limit_7d_reset")"
+	# Between the 7d number and its meter: the percentages then read as one run, and
+	# the meter stays at the right edge of the section. Outside the 7d branch so the
+	# buckets still render on a payload that carries no 7d window, since they come
+	# from a different source than the payload.
 	limit_parts="${limit_parts}$(fmt_model_usage)"
+	[ -n "$limit_7d" ] && limit_parts="${limit_parts}$(fmt_pace "$limit_7d" "$limit_7d_reset")"
 	parts="${parts} | ${limit_parts}"
 fi
 parts="${parts} | ${cost_fmt}${RESET}"
