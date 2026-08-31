@@ -76,6 +76,17 @@ STATUSLINE_PACE_GAMMA="${STATUSLINE_PACE_GAMMA:-1.5}"
 # The statusline payload carries no per-model window, but Claude Code caches the
 # whole usage response in ~/.claude.json as cachedUsageUtilization and refreshes it
 # with its own polling, so the buckets are already on disk. See SPEC.md.
+#
+# Both age thresholds are Claude Code's own, read out of its binary rather than
+# chosen here, because it is the writer and its reader defines what the block means:
+#   MODEL_USAGE_WRITE_THROTTLE (Ten=300000)  it persists a fresh fetch at most this
+#                                            often, so anything younger is as current
+#                                            as the file can be, and needs no age
+#   STATUSLINE_MODEL_USAGE_MAX_AGE (wen=3600000)  its own reader returns null past
+#                                            this, so a block older than an hour is
+#                                            one Claude Code itself discards
+STATUSLINE_MODEL_USAGE_MAX_AGE="${STATUSLINE_MODEL_USAGE_MAX_AGE:-3600}"
+MODEL_USAGE_WRITE_THROTTLE=300
 
 # Build a bar string: `filled` solid cells (█) out of `width`, the rest empty (░).
 bar_of() {
@@ -253,17 +264,19 @@ fmt_limit() {
 # switch it describes someone else's usage, so a uuid mismatch drops it rather
 # than rendering another account's numbers.
 claude_json="${STATUSLINE_JSON_PATH:-$HOME/.claude.json}"
-cj_org="" cj_buckets=""
+cj_org="" cj_fetched=0 cj_buckets=""
 if [ -f "$claude_json" ]; then
 	while IFS= read -r _line; do
 		case "$_line" in
 			org:*)     cj_org=${_line#org:} ;;
+			fetched:*) cj_fetched=${_line#fetched:} ;;
 			bucket:*)  cj_buckets="${cj_buckets}${_line#bucket:}"$'\n' ;;
 		esac
 	done < <(jq -r '
 		(.cachedUsageUtilization // {}) as $u |
 		(($u.accountUuid // "") == (.oauthAccount.accountUuid // "\u0000")) as $mine |
 		(if .oauthAccount then "org:" + (.oauthAccount.organizationType // "unknown") else "org:" end),
+		("fetched:" + (if $mine then (($u.fetchedAtMs // 0) / 1000 | floor) else 0 end | tostring)),
 		(if $mine then
 			$u.utilization.limits[]?
 			| select(.kind == "weekly_scoped")
@@ -476,18 +489,28 @@ fmt_pace() {
 # between that number and the 7d pace meter so the meter keeps the section's right
 # edge.
 #
-# There is deliberately NO staleness cutoff. An earlier version hid the field once
-# Claude Code's cached fetch aged out, on the theory that absent beats wrong. That
-# theory does not survive the rendering: a hidden stale field and an account with no
-# model bucket produce byte-identical output, so the reader cannot tell a failing
-# cache from a normal empty state. Hiding therefore swapped a slightly-old number
-# for an uninterpretable blank. Every other field shows what it has, and so does
-# this one.
+# Staleness is handled two ways, because the cache can be an hour behind and this
+# number is one you throttle against.
+#
+# Past STATUSLINE_MODEL_USAGE_MAX_AGE the field is hidden. That threshold is Claude
+# Code's own wen: its reader discards the block there, so showing it would mean
+# displaying a number the writer itself rejects.
+#
+# Between the write throttle and that cutoff the age rides along, as in "F 21% 12m".
+# An earlier version hid stale data with no age shown anywhere, and that failed for a
+# reason worth recording: a hidden stale field and an account with no bucket render
+# identically, so the reader could not tell a lagging cache from a normal empty
+# state, and a number quietly an hour behind read as current. The age is what makes
+# the difference visible, which is why hiding alone was not enough.
 fmt_model_usage() {
 	# An early-out, not the guard: with no buckets the loop below reads one empty line
 	# and skips it on the empty-name check, so removing this line changes nothing.
 	[ -n "$cj_buckets" ] || return
-	local name pct color initial
+	case "$cj_fetched" in ''|*[!0-9]*) return ;; esac
+	[ "$cj_fetched" -le 0 ] && return
+	local age=$((now - cj_fetched)) name pct color initial age_label=""
+	[ "$age" -gt "$STATUSLINE_MODEL_USAGE_MAX_AGE" ] && return
+	[ "$age" -gt "$MODEL_USAGE_WRITE_THROTTLE" ] && age_label=" $(fmt_duration "$age")"
 	while IFS=$'\t' read -r name pct; do
 		[ -z "$name" ] && continue
 		case "$pct" in ''|*[!0-9]*) continue ;; esac
@@ -495,7 +518,7 @@ fmt_model_usage() {
 		[ "$pct" -ge 50 ] && color="$YELLOW"
 		[ "$pct" -ge 80 ] && color="$RED"
 		initial=$(printf '%s' "${name:0:1}" | tr 'a-z' 'A-Z')
-		printf ' · %b%s %s%%%b' "$color" "$initial" "$pct" "$NORMAL"
+		printf ' · %b%s %s%%%b%s' "$color" "$initial" "$pct" "$NORMAL" "$age_label"
 	done <<< "$cj_buckets"
 }
 
