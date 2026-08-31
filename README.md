@@ -2,7 +2,22 @@
 
 A compact status bar for [Claude Code](https://claude.ai/code) that shows model, context health, rate-limit usage, and session cost on one line.
 
-![demo](demo.png)
+Four states, rendered by the script itself. Color is stripped here. The thresholds that
+drive it are in [Color coding](#color-coding) below.
+
+```
+# typical session on a 200K window: healthy context, on pace so no meter
+O4.6 200k M | 34k ██░░░░░░ | 4h1m 8% · 5d12h 21% · F 4% | 19m +$0.05 $0.67
+
+# loaded 1M session, past the premium-pricing cliff, burning too fast
+O5 1M M | 260k █████░░░ | 1h30m 46% · 4d20h 63% · F 63% · █████░░░ | 40m +$0.29 $8.40
+
+# past the 400K retrieval line, with a Fable reading 40 minutes old
+O5 1M M | 412k ████████▶ | 53m 71% · 5d18h 40% · F 21% 40m · ████░░░░ | 1h5m +$0.25 $14.20
+
+# no plan rate limits (API key, Bedrock, Vertex): the whole section is absent
+S5 200k M | 18k █░░░░░░░ | 0m +$0.02 $0.04
+```
 
 Sections are separated by `|`. Fields hide themselves when they aren't actionable, so the line stays short.
 
