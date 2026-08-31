@@ -33,7 +33,8 @@ The payload's `rate_limits` carries only `five_hour`, `seven_day`, and `spend_li
 are read instead from `~/.claude.json`, where Claude Code caches its own usage fetch
 as `cachedUsageUtilization` (`utilization.limits[]`, `kind == "weekly_scoped"`,
 `percent` 0-100). The statusline makes no network call for this. SPEC.md has the
-account guard, why there is no staleness cutoff, and why direct fetching was
+account guard, the two staleness constants read out of Claude Code's binary
+(`Ten`=5min write throttle, `wen`=1h read cutoff), and why direct fetching was
 abandoned.
 
 To re-derive, inspect the stored block and the binary:

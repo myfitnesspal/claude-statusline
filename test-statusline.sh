@@ -779,30 +779,62 @@ mu_json_write 60 "$FABLE_ONLY" "other-account"
 out=$(run_limits)
 assert_not_contains "a cache block from another account is ignored" "$out" "F 50%"
 
-# Age does not hide the bucket. There is deliberately no staleness cutoff: hiding a
-# stale field rendered identically to having no bucket at all, so it swapped a
-# slightly-old number for a blank the reader could not interpret. Every other field
-# shows what it has, and this one does too.
+# Staleness follows Claude Code's own two constants for this cache, not a threshold
+# of our choosing. It persists a fresh fetch at most every 5 minutes (Ten=300000),
+# and its own reader refuses the block past 1 hour (wen=3600000), so a block older
+# than an hour is one Claude Code itself would reject.
+
+# Fresh inside the write throttle: the number alone, no age.
+reset_state
+mu_json_write 120 "$FABLE_ONLY"
+out=$(run_limits)
+assert_contains "a fetch inside the write throttle renders bare" "$out" "F 50%"
+assert_not_contains "no age is shown while fresh" "$out" "F 50% 2m"
+
+reset_state
+mu_json_write 240 "$FABLE_ONLY"
+out=$(run_limits)
+assert_not_contains "4 minutes old is still bare" "$out" "F 50% 4m"
+
+# Past the write throttle the age rides along, so a number that is not current
+# cannot read as current.
+reset_state
+mu_json_write 360 "$FABLE_ONLY"
+out=$(run_limits)
+assert_contains "6 minutes old shows its age" "$out" "F 50% 6m"
+
 reset_state
 mu_json_write 1800 "$FABLE_ONLY"
 out=$(run_limits)
-assert_contains "a recent fetch renders" "$out" "F 50%"
+assert_contains "30 minutes old shows its age" "$out" "F 50% 30m"
 
 reset_state
-mu_json_write 30000 "$FABLE_ONLY"
+mu_json_write 3000 "$FABLE_ONLY"
 out=$(run_limits)
-assert_contains "an 8-hour-old fetch still renders" "$out" "F 50%"
+assert_contains "50 minutes old still renders, with its age" "$out" "F 50% 50m"
+
+# Past Claude Code's own 1-hour cutoff the field is gone. Showing it would mean
+# displaying a number the writer's own reader discards.
+reset_state
+mu_json_write 5400 "$FABLE_ONLY"
+out=$(run_limits)
+assert_not_contains "90 minutes old is hidden" "$out" "F 50%"
 
 reset_state
 mu_json_write 604800 "$FABLE_ONLY"
 out=$(run_limits)
-assert_contains "a week-old fetch still renders" "$out" "F 50%"
+assert_not_contains "a week old is hidden" "$out" "F 50%"
 
-# No staleness knob is consulted, so setting one changes nothing.
+# The cutoff is overridable, for anyone who wants a different tolerance.
 reset_state
-mu_json_write 30000 "$FABLE_ONLY"
-out=$(STATUSLINE_MODEL_USAGE_MAX_AGE=60 run_limits)
-assert_contains "no staleness cutoff is honored" "$out" "F 50%"
+mu_json_write 1800 "$FABLE_ONLY"
+out=$(STATUSLINE_MODEL_USAGE_MAX_AGE=600 run_limits)
+assert_not_contains "a tightened cutoff hides sooner" "$out" "F 50%"
+
+reset_state
+mu_json_write 5400 "$FABLE_ONLY"
+out=$(STATUSLINE_MODEL_USAGE_MAX_AGE=86400 run_limits)
+assert_contains "a loosened cutoff shows longer" "$out" "F 50%"
 
 # The color ladder matches the neighbouring limits: gray under 50, yellow 50-79,
 # red at 80 and over.

@@ -8,7 +8,7 @@
 
 Example:
 ```
-O4.6 200k | 34k █████░░░ | 2h14m 11% · 3d5h 12% · F 4% | 19m +$0.05 $0.67
+O4.6 200k | 34k █████░░░ | 2h14m 11% · 3d5h 12% · F 4% 12m | 19m +$0.05 $0.67
 ```
 
 ## Sections
@@ -28,14 +28,14 @@ O4.6 200k | 34k █████░░░ | 2h14m 11% · 3d5h 12% · F 4% | 19m +
 - Output tokens are NOT shown — they aren't in context yet (will fold in on next call)
 
 ### Section 3: Rate limits
-`2h14m 11% · 3d5h 12% · F 4%`
+`2h14m 11% · 3d5h 12% · F 4% 12m`
 
 - 5-hour and 7-day rate limit usage with time until reset
 - Dot separator between the two limits
 - Color-coded: gray < 50%, yellow 50-79%, red >= 80%
 - Only shown when rate limit data is available (Pro/Max subscribers)
 - The 7-day limit is followed by a **bidirectional pace meter** (see below): it flags both burning too fast (you'll wall before the window/horizon) and too slow (you'll leave weekly budget unused, which is lost at reset). Hidden when on pace by default, so it only appears when it has something to say.
-- **Per-model weekly buckets** are one field each, carrying the model's initial and its weekly percentage. `F 4%` is the `Current week (Fable)` row from `/usage`. They sit between the 7-day percentage and its pace meter, so the meter keeps the right edge of the section. They are read from Claude Code's own cached usage response in `~/.claude.json` (see Per-Model Weekly Usage), and the field is simply absent when the account has no such bucket.
+- **Per-model weekly buckets** are one field each, carrying the model's initial and its weekly percentage, plus the age of the reading once it is over five minutes old. `F 4%` is the `Current week (Fable)` row from `/usage`; `F 4% 12m` is the same row from a reading twelve minutes old. They sit between the 7-day percentage and its pace meter, so the meter keeps the right edge of the section. They are read from Claude Code's own cached usage response in `~/.claude.json` (see Per-Model Weekly Usage), and the field is absent when the account has no such bucket or the cached reading is over an hour old.
 
 ### Section 4: Cost and timing
 `19m +$0.05 $0.67`
@@ -204,17 +204,36 @@ The block records the `accountUuid` it describes. After an account switch it
 describes someone else's usage, so a mismatch against `oauthAccount.accountUuid`
 drops it rather than rendering the wrong numbers.
 
-### There is no staleness cutoff
+### Staleness follows Claude Code's own two constants
 
-An earlier version hid the field once Claude Code's cached fetch aged past a
-threshold, on the theory that absent beats wrong for a number you throttle against.
-That theory does not survive the rendering. A hidden stale field and an account with
-no model bucket produce byte-identical output, so a reader cannot tell a failing
-cache from a normal empty state. Hiding therefore traded a slightly-old number for a
-blank nobody can interpret, which is not the trade the theory described.
+The cache can be an hour behind, so this field needs a staleness policy that the
+other fields do not. Both of its thresholds come out of Claude Code's binary rather
+than being chosen here, because Claude Code is the writer and its own reader defines
+what the block means:
 
-The field now shows whatever the cache holds, like every other field on the line.
-`fetchedAtMs` is no longer read at all.
+| Constant | Value | Role |
+|----------|-------|------|
+| `Ten` | 300000 ms (5 min) | The write throttle. Claude Code persists a fresh fetch at most this often, so a block younger than this is as current as the file can be. |
+| `wen` | 3600000 ms (1 hour) | The read cutoff. Its own reader returns null past this, so an older block is one Claude Code itself discards. |
+
+Past `STATUSLINE_MODEL_USAGE_MAX_AGE` (default 3600 seconds, matching `wen`) the
+field is hidden, because showing it would mean displaying a number the writer's own
+reader rejects. Between the write throttle and that cutoff the age rides along, as in
+`F 21% 12m`.
+
+Both halves are needed, and the reason is a measured failure rather than a
+preference. A version that hid stale data and showed no age anywhere failed twice
+over. A hidden stale field and an account with no bucket render identically, so a
+reader cannot tell a lagging cache from a normal empty state. And a version with no
+cutoff at all displayed 4% while the real bucket sat at 21%, because the block was 85
+minutes old. The age is what makes the difference visible; the cutoff is what stops
+the number being wrong. Neither alone was enough.
+
+This also bounds what the field can be. It reports the account's weekly usage as of
+up to an hour ago, and says how long ago when that is more than five minutes. It is
+not a live reading, and no local source offers one: the endpoint is throttled per
+account, the rate-limit headers that arrive fresh on every request carry no per-model
+window, and the only other mirror of this data lives in Claude Code's process memory.
 
 ### Why the statusline does not fetch this itself
 
@@ -255,6 +274,7 @@ Approximated as `ctx_max - 33000`. Override with `STATUSLINE_COMPACT_OVERHEAD` e
 | `STATUSLINE_PACE_WORK` | unset | Your weekly work schedule (`"<days> <start>-<end>"` local 24h, e.g. `"Mon-Fri 09-18"`; days a range like `Mon-Fri` or a comma list like `Mon,Wed,Fri`; hours `HH` or `HH:MM`). The 7d pace meter judges pace against your work schedule instead of the reset (see below). Unset = judge to the reset. |
 | `STATUSLINE_PACE_HORIZON_TS` | unset | Absolute-epoch override of the computed horizon (advanced / tests). Takes precedence over `STATUSLINE_PACE_WORK`. |
 | `STATUSLINE_JSON_PATH` | `~/.claude.json` | Credential file the auth/plan letter reads (tests point it at fixtures). |
+| `STATUSLINE_MODEL_USAGE_MAX_AGE` | 3600 | Seconds of age on Claude Code's cached usage reading past which the per-model field is hidden. Default matches Claude Code's own read cutoff (`wen`). |
 
 ### 7d pace meter (bidirectional gas-pedal)
 
