@@ -8,7 +8,7 @@
 
 Example:
 ```
-O4.6 200k | 34k █████░░░ | 2h14m 11% · 3d5h 12% · F 4% 12m | 19m +$0.05 $0.67
+O4.6 200k | 34k ██░░░░░░ | 2h14m 11% · 3d5h 12% · F 4% 12m | 19m +$0.05 $0.67
 ```
 
 ## Sections
@@ -22,7 +22,7 @@ O4.6 200k | 34k █████░░░ | 2h14m 11% · 3d5h 12% · F 4% 12m | 1
 - Location shown only when cwd differs from project root, or agent/worktree active
 
 ### Section 2: Context health
-`34k █████░░░`
+`34k ██░░░░░░`
 
 - **Total context**: absolute token count colored by retrieval quality thresholds, followed by a **usage bar**. The bar fills to `usable_cap = min(compact_threshold, 400000)` — a full bar is that ceiling (the 400K retrieval red line, or the auto-compact threshold when it binds first). The bar inherits the token-count color (green < 120K, yellow 120-250K, orange 250-400K, red >= 400K) — except **orange also starts at the long-context pricing cliff**: Claude Code's `exceeds_200k_tokens` flag (premium pricing above 200K on 1M-context models) colors the bar orange from the cliff through to red, so orange means "premium pricing and/or retrieval degrading." Overflow marker: a `▶` arrowhead fused to the bar (adds one cell, reading as the bar continuing off-scale), shown only in the **red zone** (>= 400K) and strictly past the ceiling. On a small window the ceiling is the compact threshold (below 400K, so red is unreachable) — the bar just pegs full with no marker, since auto-compact self-heals. Width is `STATUSLINE_CTX_BAR_WIDTH` cells (default 8).
 - Output tokens are NOT shown — they aren't in context yet (will fold in on next call)
@@ -35,7 +35,7 @@ O4.6 200k | 34k █████░░░ | 2h14m 11% · 3d5h 12% · F 4% 12m | 1
 - Color-coded: gray < 50%, yellow 50-79%, red >= 80%
 - Only shown when rate limit data is available (Pro/Max subscribers)
 - The 7-day limit is followed by a **bidirectional pace meter** (see below): it flags both burning too fast (you'll wall before the window/horizon) and too slow (you'll leave weekly budget unused, which is lost at reset). Hidden when on pace by default, so it only appears when it has something to say.
-- **Per-model weekly buckets** are one field each, carrying the model's initial and its weekly percentage, plus the age of the reading once it is over five minutes old. `F 4%` is the `Current week (Fable)` row from `/usage`; `F 4% 12m` is the same row from a reading twelve minutes old. They sit between the 7-day percentage and its pace meter, so the meter keeps the right edge of the section. They are read from Claude Code's own cached usage response in `~/.claude.json` (see Per-Model Weekly Usage), and the field is absent when the account has no such bucket or the cached reading is over an hour old.
+- **Per-model weekly buckets** are one field each, carrying the model's initial and its weekly percentage, plus the age of the reading once it is over five minutes old. `F 4%` is the `Current week (Fable)` row from `/usage`; `F 4% 12m` is the same row from a reading twelve minutes old. They sit after the last plan percentage present and before the pace meter, so the meter keeps the right edge of the section. With a 7-day field that reads as `3d5h 12% · F 4%`; on a payload carrying only `five_hour` the bucket follows the 5-hour percentage instead, which the render deliberately allows because the buckets come from a different source than the payload. They are read from Claude Code's own cached usage response in `~/.claude.json` (see Per-Model Weekly Usage), and the field is absent when the account has no such bucket or the cached reading is over an hour old.
 
 ### Section 4: Cost and timing
 `19m +$0.05 $0.67`
@@ -63,8 +63,10 @@ No reset time is shown. The per-model window shares the 7-day window's reset, wh
 
 The color ladder matches `fmt_limit`, because the field is a plan limit and reads alongside the other two.
 
-### Per-model buckets are gated on the plan rate limits
-The field renders inside section 3 and inherits its gate. A session with no plan rate limits (API key, Bedrock, Vertex) has no plan buckets either, so hiding both together is correct rather than incidental.
+### Per-model buckets inherit section 3's gate, which is the 5-hour limit
+The field renders inside section 3, so it appears only when the payload carries `five_hour`. A session with no plan rate limits (API key, Bedrock, Vertex) has no plan buckets either, so hiding both together is correct rather than incidental.
+
+That gate is `five_hour` alone, not "any plan limit". Measured: a payload carrying `seven_day` without `five_hour` hides the whole section, including the 7-day percentage and any bucket. Whether that combination occurs is unverified — the payload builder spreads the two keys independently, so it is expressible — and no local evidence says it happens.
 
 ### Message count removed
 An earlier version showed a colored user-message count as a second degradation axis (multi-turn reliability decay). It was dropped: the number wasn't actionable in practice — token volume already carries the "how loaded is this session" signal, and message count added a competing indicator without changing what the user does about it. The per-round cost reset still keys off the same `UserPromptSubmit` marker; only the display and its state field were removed.
@@ -186,8 +188,14 @@ They are already on disk. Claude Code caches the entire usage response body in
 ```
 
 A per-model bucket is a `limits[]` entry whose `kind` is `weekly_scoped` and which
-carries a `scope.model.display_name`. Its `percent` runs 0-100 and is floored, so
-the statusline shows the same integer the `/usage` dialog does.
+carries a `scope.model.display_name`. Its `percent` is nominally a 0-100 percentage and
+is floored, so the statusline shows the same integer the `/usage` dialog does.
+
+It is not clamped, deliberately. The payload's sibling 5-hour percentage is observed
+above 100 on this account (337 of 643 logged rows, maximum 106), so the upstream shape
+does not honour the nominal range, and `fmt_limit` does not clamp either. A bucket at
+250 renders `F 250%`, which is the truth about that account. A `percent` that is not a
+number at all is a different case: the bucket is dropped rather than shown as 0%.
 
 ### The file is read once per render
 
