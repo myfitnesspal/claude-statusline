@@ -158,6 +158,12 @@ Bash poll can read live 5h and 7d usage without a statusline hook of its own:
   `session_id`, which `fit-budget.py` reads to reconstruct account-wide cost across
   concurrent sessions.
 
+`fit-budget.py` skips rows whose `session_id` begins with `test-`. The suite used to
+render against the real `$HOME` and wrote hundreds of synthetic rows into this file;
+because `fit_window` prefers the widest span, a ten-row synthetic group outranked the
+only real window and the 7-day cap came out as `$0`. The suite is isolated now, so
+the skip guards against that isolation regressing rather than a live need.
+
 Both writes are best-effort, since a snapshot is not worth a broken status line.
 Two details make that true rather than aspirational. The statusline creates
 `~/.claude-statusline` itself, because nothing else does, and before it did every
