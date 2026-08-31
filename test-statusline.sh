@@ -19,6 +19,10 @@ unset STATUSLINE_PACE_WORK
 unset STATUSLINE_PACE_HORIZON_TS
 unset STATUSLINE_PACE_SHOW_ON_PACE
 unset STATUSLINE_PACE_SHOW_COLD
+unset STATUSLINE_MODEL_BAR_WIDTH
+unset STATUSLINE_MODEL_USAGE_MAX_AGE
+unset STATUSLINE_MODEL_USAGE_CACHE
+unset STATUSLINE_MODEL_USAGE_REFRESH
 unset ANTHROPIC_API_KEY
 PASS=0
 FAIL=0
@@ -742,6 +746,136 @@ mu_out=$(cat "$MU_CACHE" 2>/dev/null || echo "NO CACHE")
 assert_contains "no buckets writes an empty list" "$mu_out" '"models":[]'
 
 rm -rf "$MU_DIR"
+
+echo ""
+echo "=== Per-model weekly usage bar (the Fable bucket) ==="
+
+# The refresher's cache is rendered as a field in the rate-limits section: the
+# model's initial, its weekly percentage, and a bar scaled 0-100% of that bucket.
+# The bucket shares the 7d reset, so no reset time is repeated.
+
+MU_R_DIR="/tmp/claude-statusline-murender-$$"
+mkdir -p "$MU_R_DIR"
+MU_R_CACHE="$MU_R_DIR/model-usage.json"
+
+# Write a cache whose data is $1 seconds old, carrying the models array $2.
+mu_cache_write() {
+	local age=$1 models=$2 stamp
+	stamp=$(( $(date +%s) - age ))
+	printf '{"ts":%s,"checked_at":%s,"models":%s}\n' "$stamp" "$stamp" "$models" > "$MU_R_CACHE"
+}
+
+# A payload with both rate limits present and the pace meter suppressed: only ~13
+# minutes into the 7d window, which is below the extrapolation floor, so a pace bar
+# cannot perturb the model-bucket assertions.
+limits_json() {
+	local now r5 r7
+	now=$(date +%s); r5=$((now + 3600)); r7=$((now + 604000))
+	printf '{"session_id":"%s","model":{"display_name":"Opus 4.6 (1M context)"},"workspace":{"current_dir":"/x","project_dir":"/x"},"cost":{"total_cost_usd":1.50,"total_api_duration_ms":60000},"context_window":{"current_usage":{"input_tokens":10000},"context_window_size":1000000},"rate_limits":{"five_hour":{"used_percentage":40,"resets_at":%s},"seven_day":{"used_percentage":12,"resets_at":%s}}}' "$SESSION" "$r5" "$r7"
+}
+
+run_limits() {
+	limits_json | STATUSLINE_MODEL_USAGE_CACHE="$MU_R_CACHE" \
+		STATUSLINE_MODEL_USAGE_REFRESH=false bash "$STATUSLINE" | strip_ansi
+}
+
+run_limits_raw() {
+	limits_json | STATUSLINE_MODEL_USAGE_CACHE="$MU_R_CACHE" \
+		STATUSLINE_MODEL_USAGE_REFRESH=false bash "$STATUSLINE"
+}
+
+# The bucket renders as initial, percentage, bar. 50% of 10 cells = 5 filled.
+reset_state
+mu_cache_write 60 '[{"name":"Fable","pct":50,"resets_at":1788739200}]'
+out=$(STATUSLINE_MODEL_BAR_WIDTH=10 run_limits)
+assert_contains "model bucket renders initial, percentage and bar" "$out" "F 50% █████░░░░░"
+assert_contains "model bucket follows the 7d limit" "$out" "12% · F 50%"
+
+# The initial comes from the server's display name, uppercased.
+reset_state
+mu_cache_write 60 '[{"name":"mythos","pct":30,"resets_at":1788739200}]'
+out=$(STATUSLINE_MODEL_BAR_WIDTH=10 run_limits)
+assert_contains "initial is uppercased from the display name" "$out" "M 30%"
+
+# Every model-scoped bucket renders, in the order the server returned them.
+reset_state
+mu_cache_write 60 '[{"name":"Fable","pct":50,"resets_at":1788739200},{"name":"Opus","pct":20,"resets_at":1788739200}]'
+out=$(STATUSLINE_MODEL_BAR_WIDTH=10 run_limits)
+assert_contains "first bucket renders" "$out" "F 50%"
+assert_contains "second bucket renders" "$out" "O 20%"
+assert_contains "buckets keep server order" "$out" "F 50% █████░░░░░ · O 20% ██░░░░░░░░"
+
+# Bar width honors its own knob, independent of the context and pace bars.
+reset_state
+mu_cache_write 60 '[{"name":"Fable","pct":50,"resets_at":1788739200}]'
+out=$(STATUSLINE_MODEL_BAR_WIDTH=4 run_limits)
+assert_contains "model bar width knob applies" "$out" "F 50% ██░░"
+
+# The fill rounds to nearest, matching the context bar: 7% of 8 cells is 0.56, which
+# rounds up to one cell rather than truncating to none.
+reset_state
+mu_cache_write 60 '[{"name":"Fable","pct":7,"resets_at":1788739200}]'
+out=$(STATUSLINE_MODEL_BAR_WIDTH=8 run_limits)
+assert_contains "fill rounds to nearest, not down" "$out" "F 7% █░░░░░░░"
+
+# A low percentage still shows the number even when the bar rounds to empty: the
+# number carries precision the bar cannot.
+reset_state
+mu_cache_write 60 '[{"name":"Fable","pct":4,"resets_at":1788739200}]'
+out=$(STATUSLINE_MODEL_BAR_WIDTH=8 run_limits)
+assert_contains "low percentage keeps its number" "$out" "F 4% ░░░░░░░░"
+
+# No cache, no field. Nothing to say, so nothing is shown.
+reset_state
+rm -f "$MU_R_CACHE"
+out=$(run_limits)
+assert_not_contains "no cache hides the field" "$out" "F "
+
+# An empty bucket list is not a bucket: the field stays hidden.
+reset_state
+mu_cache_write 60 '[]'
+out=$(run_limits)
+assert_not_contains "empty bucket list hides the field" "$out" "F "
+
+# Data older than the max age is hidden rather than shown wrong. A refresher that
+# has been failing for hours must not leave a confident stale number on screen.
+reset_state
+mu_cache_write 7200 '[{"name":"Fable","pct":50,"resets_at":1788739200}]'
+out=$(STATUSLINE_MODEL_USAGE_MAX_AGE=3600 run_limits)
+assert_not_contains "stale data is hidden" "$out" "F 50%"
+
+reset_state
+mu_cache_write 1800 '[{"name":"Fable","pct":50,"resets_at":1788739200}]'
+out=$(STATUSLINE_MODEL_USAGE_MAX_AGE=3600 run_limits)
+assert_contains "data within the max age is shown" "$out" "F 50%"
+
+# The color ladder matches the neighbouring limits: gray under 50, yellow 50-79,
+# red at 80 and over.
+reset_state
+mu_cache_write 60 '[{"name":"Fable","pct":49,"resets_at":1788739200}]'
+raw=$(run_limits_raw)
+assert_contains "under 50% is normal gray" "$raw" $'\033[38;5;245mF 49%'
+
+reset_state
+mu_cache_write 60 '[{"name":"Fable","pct":50,"resets_at":1788739200}]'
+raw=$(run_limits_raw)
+assert_contains "50% is yellow" "$raw" $'\033[33mF 50%'
+
+reset_state
+mu_cache_write 60 '[{"name":"Fable","pct":80,"resets_at":1788739200}]'
+raw=$(run_limits_raw)
+assert_contains "80% is red" "$raw" $'\033[31mF 80%'
+
+# A session with no plan rate limits (API key, Bedrock, Vertex) has no plan buckets
+# either, so the whole section stays absent even with a cache present.
+reset_state
+mu_cache_write 60 '[{"name":"Fable","pct":50,"resets_at":1788739200}]'
+out=$(mock_json 100 500 10000 200 200000 \
+	| STATUSLINE_MODEL_USAGE_CACHE="$MU_R_CACHE" STATUSLINE_MODEL_USAGE_REFRESH=false \
+	  bash "$STATUSLINE" | strip_ansi)
+assert_not_contains "no plan limits hides the model bucket too" "$out" "F 50%"
+
+rm -rf "$MU_R_DIR"
 
 echo ""
 echo "=== Results ==="

@@ -72,6 +72,13 @@ STATUSLINE_PACE_BAR_WIDTH="${STATUSLINE_PACE_BAR_WIDTH:-8}"
 STATUSLINE_PACE_TOL="${STATUSLINE_PACE_TOL:-10}"
 STATUSLINE_PACE_GAMMA="${STATUSLINE_PACE_GAMMA:-1.5}"
 
+# Per-model weekly usage buckets (the rows /usage shows as "Current week (Fable)").
+# The statusline payload carries no per-model window, so these come from the cache
+# model-usage-refresh.sh writes out of band. See SPEC.md.
+STATUSLINE_MODEL_BAR_WIDTH="${STATUSLINE_MODEL_BAR_WIDTH:-8}"
+STATUSLINE_MODEL_USAGE_MAX_AGE="${STATUSLINE_MODEL_USAGE_MAX_AGE:-3600}"
+MODEL_USAGE_CACHE="${STATUSLINE_MODEL_USAGE_CACHE:-$HOME/.claude-statusline/model-usage.json}"
+
 # Build a bar string: `filled` solid cells (█) out of `width`, the rest empty (░).
 bar_of() {
 	local filled=$1 width=$2 out="" i=0
@@ -429,6 +436,36 @@ fmt_pace() {
 	fi
 }
 
+# Per-model weekly usage, appended to the rate-limits section: one field per
+# model-scoped bucket, carrying the model's initial, its weekly percentage, and a
+# bar scaled 0-100% of that bucket. The bucket shares the 7d window's reset, so no
+# reset time is repeated.
+#
+# Data older than STATUSLINE_MODEL_USAGE_MAX_AGE is hidden rather than shown. A
+# refresher that has been failing for hours would otherwise leave a confident stale
+# number on screen, and absent beats wrong for a number you throttle against.
+fmt_model_usage() {
+	[ -f "$MODEL_USAGE_CACHE" ] || return
+	local ts age name pct color filled initial
+	ts=$(jq -r '.ts // 0' "$MODEL_USAGE_CACHE" 2>/dev/null) || return
+	case "$ts" in ''|*[!0-9]*) return ;; esac
+	age=$((now - ts))
+	[ "$age" -gt "$STATUSLINE_MODEL_USAGE_MAX_AGE" ] && return
+	while IFS=$'\t' read -r name pct; do
+		[ -z "$name" ] && continue
+		case "$pct" in ''|*[!0-9]*) continue ;; esac
+		color="$NORMAL"
+		[ "$pct" -ge 50 ] && color="$YELLOW"
+		[ "$pct" -ge 80 ] && color="$RED"
+		filled=$(( (pct * STATUSLINE_MODEL_BAR_WIDTH + 50) / 100 ))
+		[ "$filled" -gt "$STATUSLINE_MODEL_BAR_WIDTH" ] && filled=$STATUSLINE_MODEL_BAR_WIDTH
+		initial=$(printf '%s' "${name:0:1}" | tr 'a-z' 'A-Z')
+		printf ' · %b%s %s%% %s%b' "$color" "$initial" "$pct" \
+			"$(bar_of "$filled" "$STATUSLINE_MODEL_BAR_WIDTH")" "$NORMAL"
+	done < <(jq -r '.models[]? | "\(.name)\t\((.pct // 0) | if type == "number" then floor else 0 end)"' \
+		"$MODEL_USAGE_CACHE" 2>/dev/null)
+}
+
 # Shorten model name, append context size (e.g. "Opus 4.6 (1M context)" -> "O4.6·1M")
 short_model="${model%% (*}"
 short_model="${short_model/Opus /O}"
@@ -454,6 +491,7 @@ limit_parts=""
 if [ -n "$limit_5h" ]; then
 	limit_parts="$(fmt_limit "$limit_5h" "$limit_5h_reset")"
 	[ -n "$limit_7d" ] && limit_parts="${limit_parts} · $(fmt_limit "$limit_7d" "$limit_7d_reset")$(fmt_pace "$limit_7d" "$limit_7d_reset")"
+	limit_parts="${limit_parts}$(fmt_model_usage)"
 	parts="${parts} | ${limit_parts}"
 fi
 parts="${parts} | ${cost_fmt}${RESET}"
