@@ -641,10 +641,10 @@ raw=$(STATUSLINE_JSON_PATH="$AUTH_JSON_DIR/enterprise.json" run_raw 100 500 1000
 assert_contains "auth letter uncolored" "$raw" "200k E "
 
 echo ""
-echo "=== Per-model weekly usage bar (the Fable bucket) ==="
+echo "=== Per-model weekly usage field (the Fable bucket) ==="
 
 # Claude Code caches the whole usage response in ~/.claude.json as
-# cachedUsageUtilization, refreshed by its own polling. The per-model weekly
+# cachedUsageUtilization, refreshed when a usage fetch succeeds. The per-model weekly
 # buckets (/usage's "Current week (Fable)") come from there, read in the same pass
 # that reads the auth letter. STATUSLINE_JSON_PATH points that file at a fixture.
 #
@@ -691,7 +691,7 @@ run_limits_raw() {
 
 FABLE_ONLY='[{"kind":"weekly_scoped","group":"weekly","percent":50,"resets_at":"2026-09-06T23:00:00Z","scope":{"model":{"display_name":"Fable"}}}]'
 
-# The bucket renders as initial, percentage, bar. 50% of 10 cells = 5 filled.
+# The bucket renders as initial and percentage, with no bar of its own.
 reset_state
 mu_json_write 60 "$FABLE_ONLY"
 out=$(run_limits)
@@ -759,7 +759,7 @@ out=$(pace_json 65 302400 \
 	  bash "$STATUSLINE" | strip_ansi)
 assert_contains "no bucket leaves the meter against the 7d number" "$out" "65% ███░░░░░"
 
-# No cached usage block, no field. A fresh install has none until Claude Code polls.
+# No cached usage block, no field. A fresh install has none until the first /usage run.
 reset_state
 printf '{"oauthAccount":{"organizationType":"claude_max","accountUuid":"acct-1"}}\n' > "$MU_J_FIXTURE"
 out=$(run_limits)
