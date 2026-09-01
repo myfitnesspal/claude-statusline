@@ -14,7 +14,7 @@ O4.6 200k | 34k ██░░░░░░ | 2h14m 11% · 3d5h 12% · F 4% | 19m +
 ## Sections
 
 ### Section 1: Model identity
-`O4.6 200k [auth] [location]`
+`O4.6 200k [auth] [location] [sa]`
 
 - Model name abbreviated: Opus->O, Sonnet->S, Haiku->H
 - Context window size appended (e.g. 200k, 1M) — detected from JSON `context_window.context_window_size`
