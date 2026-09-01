@@ -1,0 +1,6 @@
+services:
+  claude-statusline:
+    team: peas
+    description: "Shell statusline script for Claude Code that renders model identity, context health, rate limit usage, and session cost from the StatuslineUpdate hook payload."
+    catalog:
+      kind: tool
