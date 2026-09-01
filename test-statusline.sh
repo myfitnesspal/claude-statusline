@@ -680,6 +680,17 @@ touch "$TEST_HOME/src/claude-config/subagents-disabled"
 out=$(SUBAGENT_MODE_STATE_DIR="$SA_STATE_DIR" run 100 500 10000 200 200000)
 assert_contains "kill switch with no state file renders [sa:off]" "$out" "[sa:off]"
 
+# No state file, no global switch: a project-scope .subagents-disabled in the
+# payload's project_dir (/tmp/test) also reads off, matching the writer's
+# session -> global -> project resolution order
+reset_state
+rm -f "$TEST_HOME/src/claude-config/subagents-disabled"
+mkdir -p /tmp/test
+touch /tmp/test/.subagents-disabled
+out=$(SUBAGENT_MODE_STATE_DIR="$SA_STATE_DIR" run 100 500 10000 200 200000)
+assert_contains "project switch with no state file renders [sa:off]" "$out" "[sa:off]"
+rm -f /tmp/test/.subagents-disabled
+
 # No state file, no kill switch: the mode defaults on
 reset_state
 rm -f "$TEST_HOME/src/claude-config/subagents-disabled"
