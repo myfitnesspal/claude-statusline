@@ -648,7 +648,7 @@ echo "=== Subagent mode segment ==="
 # throwaway HOME carries no such file by default, which is the not-installed case.
 reset_state
 out=$(run 100 500 10000 200 200000)
-assert_not_contains "segment absent when the mode script is not installed" "$out" "[sa:"
+assert_not_contains "segment absent when the mode script is not installed" "$out" "200k sa"
 
 # Install the guard file under the throwaway HOME. Session state is a per-session
 # file in SUBAGENT_MODE_STATE_DIR (tests point it at a scratch dir; production
@@ -659,26 +659,30 @@ touch "$SA_HOOK_DIR/subagent-mode.sh"
 SA_STATE_DIR="/tmp/claude-statusline-satest-$$"
 mkdir -p "$SA_STATE_DIR"
 
-# Session state file says enabled: green [sa:on]
+# Session state file says enabled: bare sa, green. The plain text is identical
+# for on and off (color alone carries the state), so raw color escapes are the
+# discriminating assertions throughout this group.
 reset_state
 printf 'enabled' > "$SA_STATE_DIR/claude-subagent-state-${SESSION}"
 out=$(SUBAGENT_MODE_STATE_DIR="$SA_STATE_DIR" run 100 500 10000 200 200000)
-assert_contains "state file enabled renders [sa:on]" "$out" "[sa:on]"
+assert_contains "state file enabled renders the sa segment" "$out" "200k sa |"
 raw=$(SUBAGENT_MODE_STATE_DIR="$SA_STATE_DIR" run_raw 100 500 10000 200 200000)
-assert_contains "[sa:on] is green" "$raw" $'\033[32m[sa:on]'
+assert_contains "enabled sa is green" "$raw" $'\033[32msa'
 
-# Session state file says disabled: gray [sa:off]
+# Session state file says disabled: bare sa, gray
 reset_state
 printf 'disabled' > "$SA_STATE_DIR/claude-subagent-state-${SESSION}"
 out=$(SUBAGENT_MODE_STATE_DIR="$SA_STATE_DIR" run 100 500 10000 200 200000)
-assert_contains "state file disabled renders [sa:off]" "$out" "[sa:off]"
+assert_contains "state file disabled still renders the sa segment" "$out" "200k sa |"
+raw=$(SUBAGENT_MODE_STATE_DIR="$SA_STATE_DIR" run_raw 100 500 10000 200 200000)
+assert_contains "disabled sa is gray" "$raw" $'\033[38;5;245msa'
 
 # No state file: the global kill switch under $HOME/src/claude-config decides
 reset_state
 rm -f "$SA_STATE_DIR/claude-subagent-state-${SESSION}"
 touch "$TEST_HOME/src/claude-config/subagents-disabled"
-out=$(SUBAGENT_MODE_STATE_DIR="$SA_STATE_DIR" run 100 500 10000 200 200000)
-assert_contains "kill switch with no state file renders [sa:off]" "$out" "[sa:off]"
+raw=$(SUBAGENT_MODE_STATE_DIR="$SA_STATE_DIR" run_raw 100 500 10000 200 200000)
+assert_contains "kill switch with no state file renders gray sa" "$raw" $'\033[38;5;245msa'
 
 # No state file, no global switch: a project-scope .subagents-disabled in the
 # payload's project_dir (/tmp/test) also reads off, matching the writer's
@@ -687,15 +691,15 @@ reset_state
 rm -f "$TEST_HOME/src/claude-config/subagents-disabled"
 mkdir -p /tmp/test
 touch /tmp/test/.subagents-disabled
-out=$(SUBAGENT_MODE_STATE_DIR="$SA_STATE_DIR" run 100 500 10000 200 200000)
-assert_contains "project switch with no state file renders [sa:off]" "$out" "[sa:off]"
+raw=$(SUBAGENT_MODE_STATE_DIR="$SA_STATE_DIR" run_raw 100 500 10000 200 200000)
+assert_contains "project switch with no state file renders gray sa" "$raw" $'\033[38;5;245msa'
 rm -f /tmp/test/.subagents-disabled
 
 # No state file, no kill switch: the mode defaults on
 reset_state
 rm -f "$TEST_HOME/src/claude-config/subagents-disabled"
-out=$(SUBAGENT_MODE_STATE_DIR="$SA_STATE_DIR" run 100 500 10000 200 200000)
-assert_contains "no state and no kill switch defaults to [sa:on]" "$out" "[sa:on]"
+raw=$(SUBAGENT_MODE_STATE_DIR="$SA_STATE_DIR" run_raw 100 500 10000 200 200000)
+assert_contains "no state and no kill switch defaults to green sa" "$raw" $'\033[32msa'
 
 # Uninstall the guard so later groups render without the segment, as before
 rm -rf "$TEST_HOME/src/claude-config"

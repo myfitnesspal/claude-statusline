@@ -555,7 +555,8 @@ location=""
 [ -n "$worktree_name" ] && location="${location:+${location} }${worktree_name}"
 [ "$cwd" != "$project_dir" ] && [ -z "$worktree_name" ] && location="${cwd##*/}"
 
-# Subagent mode status (optional, no-op if the mode script is not installed).
+# Subagent mode status: a bare "sa", green when the mode is on, gray when off
+# (no label text, per the style rules). No-op if the mode script is not installed.
 # Reads the same state surfaces as subagent-mode.sh's resolve_state, in the same
 # order: the per-session state file, then the global kill switch, then the
 # project-scope .subagents-disabled in the project root, else on.
@@ -566,16 +567,16 @@ if [ -f "$HOME/src/claude-config/hooks/subagent-mode.sh" ]; then
 	sa_state_file="${SUBAGENT_MODE_STATE_DIR:-/tmp}/claude-subagent-state-${session_id}"
 	if [ -f "$sa_state_file" ]; then
 		if grep -q "^disabled$" "$sa_state_file" 2>/dev/null; then
-			sa_status="${NORMAL}[sa:off]"
+			sa_status="${NORMAL}sa"
 		else
-			sa_status="${GREEN}[sa:on]"
+			sa_status="${GREEN}sa"
 		fi
 	elif [ -f "$HOME/src/claude-config/subagents-disabled" ]; then
-		sa_status="${NORMAL}[sa:off]"
+		sa_status="${NORMAL}sa"
 	elif [ -n "$project_dir" ] && [ -f "$project_dir/.subagents-disabled" ]; then
-		sa_status="${NORMAL}[sa:off]"
+		sa_status="${NORMAL}sa"
 	else
-		sa_status="${GREEN}[sa:on]"
+		sa_status="${GREEN}sa"
 	fi
 fi
 
