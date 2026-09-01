@@ -668,6 +668,15 @@ out=$(SUBAGENT_MODE_STATE_DIR="$SA_STATE_DIR" run 100 500 10000 200 200000)
 assert_contains "state file enabled renders the sa segment" "$out" "200k sa |"
 raw=$(SUBAGENT_MODE_STATE_DIR="$SA_STATE_DIR" run_raw 100 500 10000 200 200000)
 assert_contains "enabled sa is green" "$raw" $'\033[32msa'
+assert_contains "sa segment resets to gray after itself" "$raw" $'\033[32msa\033[38;5;245m'
+
+# Session state outranks the persistent switches: an enabled session file with
+# the global kill switch present still renders green
+reset_state
+touch "$TEST_HOME/src/claude-config/subagents-disabled"
+raw=$(SUBAGENT_MODE_STATE_DIR="$SA_STATE_DIR" run_raw 100 500 10000 200 200000)
+assert_contains "enabled session state outranks the global kill switch" "$raw" $'\033[32msa'
+rm -f "$TEST_HOME/src/claude-config/subagents-disabled"
 
 # Session state file says disabled: bare sa, gray
 reset_state
