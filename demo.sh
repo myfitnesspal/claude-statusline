@@ -36,6 +36,7 @@ unset STATUSLINE_PACE_TOL STATUSLINE_PACE_GAMMA
 unset STATUSLINE_PACE_WORK STATUSLINE_PACE_HORIZON_TS
 unset STATUSLINE_PACE_SHOW_ON_PACE STATUSLINE_PACE_SHOW_COLD
 unset STATUSLINE_MODEL_USAGE_MAX_AGE ANTHROPIC_API_KEY
+unset SUBAGENT_MODE_STATE_DIR SESSION_COUNTS_DIR
 
 # Every render appends a usage snapshot under $HOME, so $HOME is a throwaway here.
 # Without it, generating the README would write rows into the real history that

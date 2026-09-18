@@ -20,7 +20,7 @@ unset STATUSLINE_PACE_HORIZON_TS
 unset STATUSLINE_PACE_SHOW_ON_PACE
 unset STATUSLINE_PACE_SHOW_COLD
 unset STATUSLINE_MODEL_USAGE_MAX_AGE
-unset SUBAGENT_MODE_STATE_DIR
+unset SUBAGENT_MODE_STATE_DIR SESSION_COUNTS_DIR
 unset ANTHROPIC_API_KEY
 PASS=0
 FAIL=0
@@ -497,8 +497,9 @@ assert_not_contains "legacy v2 msg count not rendered" "$out" "msg"
 echo ""
 echo "=== Context section has no trailing indicator ==="
 
-# The context section is just the token count and the usage bar — no
-# dot-separated suffix. Legacy state files with extra trailing fields are
+# The context section carries no dot-separated suffix: the token count, the
+# usage bar, and the space-separated session-signals segment when a counts
+# file exists. Legacy state files with extra trailing fields are
 # ignored and never produce one.
 reset_state
 echo "5|1.50|$(($(date +%s) - 800))|60000|800" > "/tmp/claude-statusline-${SESSION}"
@@ -764,8 +765,20 @@ assert_contains "slips then corrections after the bar, space separated" "$out" "
 raw=$(SESSION_COUNTS_DIR="$SIG_DIR" run_raw 100 500 10000 200 200000)
 assert_contains "two corrections are orange" "$raw" $'\033[38;5;208m~2'
 
+# An unreadable counts file renders nothing and prints nothing: the segment
+# tests readability rather than existence, so the read never runs.
+reset_state
+printf '{"slips": 1, "corrections": 1}' > "$SIG_FILE"
+chmod 000 "$SIG_FILE"
+err=$(mock_json 100 500 10000 200 200000 | SESSION_COUNTS_DIR="$SIG_DIR" bash "$STATUSLINE" 2>&1 >/dev/null)
+out=$(SESSION_COUNTS_DIR="$SIG_DIR" run 100 500 10000 200 200000)
+assert_not_contains "an unreadable counts file prints nothing to stderr" "x$err" "Permission denied"
+assert_not_contains "an unreadable counts file renders no slip marker" "$out" "!"
+chmod 644 "$SIG_FILE"
+
 rm -rf "$SIG_DIR"
 
+echo ""
 echo "=== Per-model weekly usage field (the Fable bucket) ==="
 
 # Claude Code caches the whole usage response in ~/.claude.json as
