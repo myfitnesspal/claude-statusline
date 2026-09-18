@@ -592,7 +592,9 @@ fi
 # both sides in tests; production leaves it unset (default /tmp).
 sig_status=""
 sig_file="${SESSION_COUNTS_DIR:-/tmp}/claude-session-counts-${session_id}.json"
-if [ -f "$sig_file" ]; then
+# -r rather than -f: an unreadable file would make $(<file) print a permission
+# error to stderr on every render, and the redirect cannot reach that read.
+if [ -r "$sig_file" ]; then
 	sig_json=$(<"$sig_file")
 	sig_slips=0 sig_corr=0
 	[[ $sig_json =~ \"slips\":[[:space:]]*([0-9]+) ]] && sig_slips=${BASH_REMATCH[1]}
