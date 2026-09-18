@@ -23,10 +23,11 @@ O4.6 200k | 34k ██░░░░░░ | 2h14m 11% · 3d5h 12% · F 4% | 19m +
 - Subagent mode status: a bare `sa`, green when the mode is on, gray when off (state by color alone, no label text, matching the no-labels style rule), shown only when the subagent-mode script (`~/src/claude-config/hooks/subagent-mode.sh`) is installed. State comes from the per-session file `${SUBAGENT_MODE_STATE_DIR:-/tmp}/claude-subagent-state-<session_id>` (`enabled`/`disabled`); with no state file, the global kill switch `~/src/claude-config/subagents-disabled` means off, then a `.subagents-disabled` in the payload's project root means off, else on (the writer's session, global, project resolution order). `SUBAGENT_MODE_STATE_DIR` exists so tests can isolate the state file; production leaves it unset.
 
 ### Section 2: Context health
-`34k ██░░░░░░`
+`34k ██░░░░░░ [!N] [~N]`
 
 - **Total context**: absolute token count colored by retrieval quality thresholds, followed by a **usage bar**. The bar fills to `usable_cap = min(compact_threshold, 400000)` — a full bar is that ceiling (the 400K retrieval red line, or the auto-compact threshold when it binds first). The bar inherits the token-count color (green < 120K, yellow 120-250K, orange 250-400K, red >= 400K) — except **orange also starts at the long-context pricing cliff**: Claude Code's `exceeds_200k_tokens` flag (premium pricing above 200K on 1M-context models) colors the bar orange from the cliff through to red, so orange means "premium pricing and/or retrieval degrading." Overflow marker: a `▶` arrowhead fused to the bar (adds one cell, reading as the bar continuing off-scale), shown only in the **red zone** (>= 400K) and strictly past the ceiling. On a small window the ceiling is the compact threshold (below 400K, so red is unreachable) — the bar just pegs full with no marker, since auto-compact self-heals. Width is `STATUSLINE_CTX_BAR_WIDTH` cells (default 8).
 - Output tokens are NOT shown — they aren't in context yet (will fold in on next call)
+- Session signals, after the bar because both describe how the session is holding up: self-reported slips as `!N` in red, and final messages the punctuation-glue Stop hook flagged as `~N`, yellow for one and orange from two (the freshness hook's drift threshold). Each hides at zero, and with no counts file nothing renders. Both come from the per-session counts file `${SESSION_COUNTS_DIR:-/tmp}/claude-session-counts-<session_id>.json`, written by two claude-config hooks through `hooks/session_signals.py`: `punctuation-glue.py` on Stop (bumps `corrections`, and `slips` when the final message carries a bare `[slip]`), and `session-freshness.py` on UserPromptSubmit (overwrites `slips` with the transcript's authoritative count). The file is parsed with bash regex rather than a jq fork. `SESSION_COUNTS_DIR` is the writers' override too, so one variable isolates both sides in tests.
 
 ### Section 3: Rate limits
 `2h14m 11% · 3d5h 12% · F 4%`
@@ -147,6 +148,9 @@ Format (v6): `6|round_start_cost`
 
 New-round marker: `/tmp/claude-statusline-newround-{session_id}`
 Created by `round-reset.sh` on `UserPromptSubmit` hook, consumed by statusline on next update.
+
+Session counts: `${SESSION_COUNTS_DIR:-/tmp}/claude-session-counts-{session_id}.json`
+Written by the claude-config hooks (`hooks/session_signals.py`), read-only here. One flat JSON object: `slips`, `corrections`, `flagged_lines`, `last_findings`.
 
 ### Usage snapshots
 
@@ -348,6 +352,7 @@ Approximated as `ctx_max - 33000`. Override with `STATUSLINE_COMPACT_OVERHEAD` e
 | `STATUSLINE_PACE_HORIZON_TS` | unset | Absolute-epoch override of the computed horizon (advanced / tests). Takes precedence over `STATUSLINE_PACE_WORK`. |
 | `STATUSLINE_JSON_PATH` | `~/.claude.json` | Credential file the auth/plan letter reads (tests point it at fixtures). |
 | `STATUSLINE_MODEL_USAGE_MAX_AGE` | 3600 | Seconds of age on Claude Code's cached usage reading past which the per-model field is hidden. Default matches Claude Code's own read cutoff (`wen`). |
+| `SESSION_COUNTS_DIR` | `/tmp` | Directory of the per-session counts file the session-signals segment reads. Shared with the claude-config hooks that write it, so tests isolate both sides with one variable. |
 
 ### 7d pace meter (bidirectional gas-pedal)
 

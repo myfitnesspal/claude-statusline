@@ -580,12 +580,39 @@ if [ -f "$HOME/src/claude-config/hooks/subagent-mode.sh" ]; then
 	fi
 fi
 
+# Session signals: self-reported slips and punctuation-glue corrections, read
+# from the per-session counts file the claude-config hooks write
+# (hooks/session_signals.py, written by punctuation-glue.py on Stop and
+# session-freshness.py on UserPromptSubmit). Slips render as !N in red;
+# corrections as ~N, yellow for one and orange from two, which is the
+# freshness hook's drift threshold. Each hides at zero, and with no counts
+# file nothing renders. Parsed with bash regex rather than a jq fork: the
+# file is one flat JSON object the hooks write with json.dumps.
+# SESSION_COUNTS_DIR is the writers' override too, so one variable isolates
+# both sides in tests; production leaves it unset (default /tmp).
+sig_status=""
+sig_file="${SESSION_COUNTS_DIR:-/tmp}/claude-session-counts-${session_id}.json"
+if [ -f "$sig_file" ]; then
+	sig_json=$(<"$sig_file")
+	sig_slips=0 sig_corr=0
+	[[ $sig_json =~ \"slips\":[[:space:]]*([0-9]+) ]] && sig_slips=${BASH_REMATCH[1]}
+	[[ $sig_json =~ \"corrections\":[[:space:]]*([0-9]+) ]] && sig_corr=${BASH_REMATCH[1]}
+	[ "$sig_slips" -gt 0 ] && sig_status="${RED}!${sig_slips}"
+	if [ "$sig_corr" -gt 0 ]; then
+		sig_color=$YELLOW
+		[ "$sig_corr" -ge 2 ] && sig_color=$ORANGE
+		sig_status="${sig_status:+${sig_status} }${sig_color}~${sig_corr}"
+	fi
+fi
+
 parts="${NORMAL}${short_model}"
 [ -n "$auth_letter" ] && parts="${parts} ${auth_letter}"
 [ -n "$location" ] && parts="${parts} ${location}"
 [ -n "$sa_status" ] && parts="${parts} ${sa_status}${NORMAL}"
 parts="${parts} |"
 parts="${parts} ${ctx_color}$(fmt_tokens "$ctx_tokens") ${ctx_bar}${NORMAL}"
+# Session signals sit after the bar: both describe how the session is holding up.
+[ -n "$sig_status" ] && parts="${parts} ${sig_status}${NORMAL}"
 api_secs=$((api_ms / 1000))
 round_cost=$(awk "BEGIN {printf \"%.2f\", $cost - $round_start_cost}")
 cost_fmt=$(printf '%s +$%s $%.2f' "$(fmt_duration "$api_secs")" "$round_cost" "$cost")

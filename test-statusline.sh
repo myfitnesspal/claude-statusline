@@ -715,6 +715,57 @@ rm -rf "$TEST_HOME/src/claude-config"
 rm -rf "$SA_STATE_DIR"
 
 echo ""
+echo "=== Session signals segment (slips and corrections) ==="
+
+# Two claude-config hooks write ${SESSION_COUNTS_DIR:-/tmp}/claude-session-counts-<session_id>.json
+# (hooks/session_signals.py): the Stop hook bumps corrections when the final
+# message carries punctuation-as-glue, and both hooks keep slips current.
+# Slips render as !N in red, corrections as ~N in yellow (orange from two, the
+# freshness hook's drift threshold). Each hides at zero. With no counts file
+# nothing renders. The same variable isolates the writers, so tests point it
+# at a scratch dir; production leaves it unset.
+SIG_DIR="/tmp/claude-statusline-sigtest-$$"
+mkdir -p "$SIG_DIR"
+SIG_FILE="$SIG_DIR/claude-session-counts-${SESSION}"
+SIG_FILE="${SIG_FILE}.json"
+
+reset_state
+rm -f "$SIG_FILE"
+out=$(SESSION_COUNTS_DIR="$SIG_DIR" run 100 500 10000 200 200000)
+assert_not_contains "no counts file renders no slip marker" "$out" "!"
+assert_not_contains "no counts file renders no correction marker" "$out" "~"
+
+reset_state
+printf '{"slips": 0, "corrections": 0}' > "$SIG_FILE"
+out=$(SESSION_COUNTS_DIR="$SIG_DIR" run 100 500 10000 200 200000)
+assert_not_contains "zero slips hide the slip marker" "$out" "!"
+assert_not_contains "zero corrections hide the correction marker" "$out" "~"
+
+reset_state
+printf '{"slips": 1, "corrections": 0}' > "$SIG_FILE"
+out=$(SESSION_COUNTS_DIR="$SIG_DIR" run 100 500 10000 200 200000)
+assert_contains "one slip renders !1 after the context bar" "$out" "░ !1 |"
+assert_not_contains "one slip with zero corrections renders no correction marker" "$out" "~"
+raw=$(SESSION_COUNTS_DIR="$SIG_DIR" run_raw 100 500 10000 200 200000)
+assert_contains "the slip marker is red" "$raw" $'\033[31m!1'
+assert_contains "the segment resets to gray after itself" "$raw" $'!1\033[38;5;245m'
+
+reset_state
+printf '{"slips": 0, "corrections": 1}' > "$SIG_FILE"
+out=$(SESSION_COUNTS_DIR="$SIG_DIR" run 100 500 10000 200 200000)
+assert_contains "one correction renders ~1 after the context bar" "$out" "░ ~1 |"
+raw=$(SESSION_COUNTS_DIR="$SIG_DIR" run_raw 100 500 10000 200 200000)
+assert_contains "one correction is yellow" "$raw" $'\033[33m~1'
+
+reset_state
+printf '{"corrections": 2, "flagged_lines": 5, "slips": 1}' > "$SIG_FILE"
+out=$(SESSION_COUNTS_DIR="$SIG_DIR" run 100 500 10000 200 200000)
+assert_contains "slips then corrections after the bar, space separated" "$out" "░ !1 ~2 |"
+raw=$(SESSION_COUNTS_DIR="$SIG_DIR" run_raw 100 500 10000 200 200000)
+assert_contains "two corrections are orange" "$raw" $'\033[38;5;208m~2'
+
+rm -rf "$SIG_DIR"
+
 echo "=== Per-model weekly usage field (the Fable bucket) ==="
 
 # Claude Code caches the whole usage response in ~/.claude.json as
